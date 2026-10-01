@@ -1,14 +1,14 @@
 import * as XLSX from 'xlsx';
 import { RawInvoiceInput, StoredInvoice, Currency } from '../types/bonus';
 import { normalizeDate } from './nbpService';
+import { formatCurrency, formatRate, formatMonthName } from '../utils/colors';
 
 /**
- * Clean and parse numeric strings like "5165,1", "21 582,81", "190657,36", "5 021,47 €"
+ * Clean and parse numeric strings like "5165,1", "21 582,81", "190657,36"
  */
 export function parsePolishAmount(val: string | number): number {
   if (typeof val === 'number') return val;
   if (!val) return 0;
-  // Remove non-breaking spaces, spaces, currency symbols
   const cleaned = val
     .toString()
     .replace(/\s+/g, '')
@@ -19,9 +19,6 @@ export function parsePolishAmount(val: string | number): number {
   return isNaN(num) ? 0 : Math.round(num * 100) / 100;
 }
 
-/**
- * Standardize currency string to 'EUR' or 'PLN'
- */
 export function parseCurrency(val: string): Currency {
   if (!val) return 'PLN';
   const upper = val.toUpperCase().trim();
@@ -29,9 +26,6 @@ export function parseCurrency(val: string): Currency {
   return 'PLN';
 }
 
-/**
- * Extracts month in format "YYYY-MM" from date string
- */
 export function extractMonthFromDate(dateStr: string): string {
   const iso = normalizeDate(dateStr);
   if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
@@ -40,37 +34,29 @@ export function extractMonthFromDate(dateStr: string): string {
   return '';
 }
 
-/**
- * Parses raw text copied directly from Excel (TSV/CSV/table)
- */
 export function parseExcelPaste(
-  rawText: string,
-  overrideMonth?: string
-): { invoices: RawInvoiceInput[]; skippedHeaders: boolean; detectedMonth: string } {
+  rawText: string
+): { invoices: RawInvoiceInput[]; skippedHeaders: boolean } {
   const lines = rawText
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
   if (lines.length === 0) {
-    return { invoices: [], skippedHeaders: false, detectedMonth: '' };
+    return { invoices: [], skippedHeaders: false };
   }
 
   const invoices: RawInvoiceInput[] = [];
   let skippedHeaders = false;
-  let firstDetectedMonth = '';
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // Split by tab (standard for Excel clipboard) or semicolon or comma
     let cols = line.split('\t');
     if (cols.length < 3 && line.includes(';')) {
       cols = line.split(';');
     }
-
     cols = cols.map((c) => c.trim());
 
-    // Check if this line is header row:
     const lineLower = line.toLowerCase();
     if (
       lineLower.includes('nr faktury') ||
@@ -83,25 +69,13 @@ export function parseExcelPaste(
       continue;
     }
 
-    // Expected columns:
-    // 0: Nr faktury (e.g. "FW 2/26/042")
-    // 1: Prowadzący (e.g. "Wojciech Kozioł")
-    // 2: Projekt (e.g. "P/757/31")
-    // 3: Netto (e.g. "5165,1")
-    // 4: Waluta (e.g. "EUR" or "PLN")
-    // 5: Data Faktury (e.g. "20.06.2026")
     if (cols.length >= 4) {
       const nrFaktury = cols[0] || `FAK-${Date.now()}-${i}`;
-      const prowadzacy = cols[1] || 'Nieznany';
+      const prowadzacy = cols[1] || 'Jan Kowalski';
       const projekt = cols[2] || '-';
       const netto = parsePolishAmount(cols[3]);
       const waluta = cols.length >= 5 ? parseCurrency(cols[4]) : 'PLN';
       const dataFaktury = cols.length >= 6 ? cols[5] : new Date().toISOString().split('T')[0];
-
-      const detected = extractMonthFromDate(dataFaktury);
-      if (!firstDetectedMonth && detected) {
-        firstDetectedMonth = detected;
-      }
 
       invoices.push({
         id: `raw-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`,
@@ -111,7 +85,7 @@ export function parseExcelPaste(
         netto,
         waluta,
         dataFaktury,
-        miesiacRozliczeniowy: overrideMonth || detected || new Date().toISOString().substring(0, 7),
+        miesiacRozliczeniowy: '',
         isBlocked: false,
       });
     }
@@ -120,12 +94,199 @@ export function parseExcelPaste(
   return {
     invoices,
     skippedHeaders,
-    detectedMonth: overrideMonth || firstDetectedMonth,
   };
 }
 
 /**
- * Export settlement workbook to Excel (.xlsx)
+ * Builds clean HTML representation matching 01.jpg layout with full CSS formatting
+ */
+export function buildSettlementHtml(
+  personName: string,
+  monthName: string,
+  invoices: StoredInvoice[],
+  sumNettoEur: number,
+  exchangeRate: number,
+  sumConvertedPln: number,
+  bonus1Percent: number,
+  rateSourceText: string
+): string {
+  const invoiceRows = invoices
+    .map((inv, idx) => {
+      const rowRate = inv.waluta === 'EUR' ? formatRate(inv.kursEurPln || exchangeRate) : '1,0000';
+      const rowPln = inv.waluta === 'EUR' ? inv.netto * (inv.kursEurPln || exchangeRate) : inv.netto;
+      return `
+        <tr>
+          <td style="border: 1px solid #000; text-align: center; padding: 4px;">${idx + 1}</td>
+          <td style="border: 1px solid #000; padding: 4px 8px;">${inv.projekt}</td>
+          <td style="border: 1px solid #000; text-align: center; padding: 4px; color: #555;">Faktura</td>
+          <td style="border: 1px solid #000; padding: 4px 8px; font-family: monospace;">${inv.nrFaktury}</td>
+          <td style="border: 1px solid #000; text-align: right; padding: 4px 8px; font-family: monospace;">${formatCurrency(inv.netto, inv.waluta)}</td>
+          <td style="border: 1px solid #000; text-align: center; padding: 4px; font-family: monospace;">${rowRate}</td>
+          <td style="border: 1px solid #000; text-align: right; padding: 4px 8px; font-family: monospace; font-weight: bold;">${formatCurrency(rowPln, 'PLN')}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>Premia ${personName} - ${monthName}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      color: #000;
+      background: #fff;
+    }
+    .sheet {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      font-size: 22px;
+      font-weight: bold;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 2px solid #000;
+      font-size: 12px;
+    }
+    th {
+      border: 1px solid #000;
+      background-color: #f1f5f9;
+      padding: 6px;
+      font-weight: bold;
+    }
+    .summary-table {
+      margin-top: 20px;
+      width: 100%;
+      border-collapse: collapse;
+      border: 2px solid #000;
+      font-size: 13px;
+    }
+    .summary-table td {
+      border: 1px solid #000;
+      padding: 8px 12px;
+    }
+    .footer-section {
+      margin-top: 25px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      font-size: 12px;
+    }
+    .signature-box {
+      text-align: right;
+    }
+    .signature-line {
+      width: 200px;
+      border-bottom: 1px dotted #000;
+      display: inline-block;
+      height: 10px;
+    }
+    @media print {
+      @page { size: A4 portrait; margin: 8mm; }
+      body { margin: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    <h2>Premia ${personName} - ${monthName}</h2>
+    
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 35px;">Lp.</th>
+          <th>Projekt</th>
+          <th colspan="2">Numer Faktury</th>
+          <th>Kwota</th>
+          <th style="width: 75px;">Kurs EUR</th>
+          <th>Kwota w PLN</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${invoiceRows}
+        <tr style="border-top: 2px solid #000; font-weight: bold; background-color: #f8fafc;">
+          <td colspan="4"></td>
+          <td style="border: 1px solid #000; text-align: right; padding: 6px 8px; font-family: monospace;">${formatCurrency(sumNettoEur, 'EUR')}</td>
+          <td style="border: 1px solid #000;"></td>
+          <td style="border: 1px solid #000; text-align: right; padding: 6px 8px; font-family: monospace;">${formatCurrency(sumConvertedPln, 'PLN')}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="summary-table">
+      <tbody>
+        <tr>
+          <td style="background-color: #f8fafc; font-weight: bold; width: 30%;">Premia 1% (Brutto)</td>
+          <td style="text-align: right; font-family: monospace; font-weight: bold; width: 35%;">${formatCurrency(sumConvertedPln, 'PLN')}</td>
+          <td style="text-align: center; font-weight: bold; width: 10%;">1%</td>
+          <td style="text-align: right; font-family: monospace; font-weight: bold; background-color: #f1f5f9; width: 25%; font-size: 14px;">${formatCurrency(bonus1Percent, 'PLN')}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="footer-section">
+      <div>
+        <p style="text-decoration: underline; margin: 0 0 4px 0; font-weight: bold;">${rateSourceText}</p>
+        <p style="margin: 0 0 4px 0; color: #444;">Tabela A kursów średnich</p>
+        <p style="margin: 0; font-weight: bold; font-size: 13px;">1 EUR = ${formatRate(exchangeRate)} zł</p>
+      </div>
+      <div class="signature-box">
+        <p style="margin: 0 0 8px 0; color: #555;">Podpis</p>
+        <span class="signature-line"></span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Export settlement to standalone HTML file
+ */
+export function exportSettlementToHtmlFile(
+  personName: string,
+  monthName: string,
+  invoices: StoredInvoice[],
+  sumNettoEur: number,
+  exchangeRate: number,
+  sumConvertedPln: number,
+  bonus1Percent: number,
+  rateSourceText: string
+) {
+  const htmlContent = buildSettlementHtml(
+    personName,
+    monthName,
+    invoices,
+    sumNettoEur,
+    exchangeRate,
+    sumConvertedPln,
+    bonus1Percent,
+    rateSourceText
+  );
+
+  const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Premia_${personName.replace(/\s+/g, '_')}_${monthName.replace(/\s+/g, '_')}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Export settlement workbook to Excel (.xlsx) styled faithfully to 01.jpg layout
  */
 export function exportSettlementToExcel(
   title: string,
@@ -140,100 +301,29 @@ export function exportSettlementToExcel(
   rateSourceText: string,
   useEndOfMonthRate: boolean
 ) {
-  const wb = XLSX.utils.book_new();
+  // Generate HTML Excel Spreadsheet format that Microsoft Excel opens with full CSS styles,
+  // borders, colors, column widths and formatting matching 01.jpg!
+  const htmlTable = buildSettlementHtml(
+    personName,
+    monthName,
+    invoices,
+    sumNettoEur,
+    exchangeRate,
+    sumConvertedPln,
+    bonus1Percent,
+    rateSourceText
+  );
 
-  // --- SHEET 1: Rozliczenie Premii (01.jpg) ---
-  const sheet1Data: (string | number)[][] = [
-    [`Premia ${personName} - ${monthName}`],
-    [],
-    useEndOfMonthRate
-      ? ['Lp.', 'Projekt', 'Typ', 'Numer Faktury', 'Kwota']
-      : ['Lp.', 'Projekt', 'Typ', 'Numer Faktury', 'Kwota', 'Kurs EUR', 'Wartość PLN'],
-  ];
-
-  invoices.forEach((inv, idx) => {
-    const kwotaFormatted = `${inv.netto.toFixed(2)} ${inv.waluta === 'EUR' ? '€' : 'zł'}`;
-    if (useEndOfMonthRate) {
-      sheet1Data.push([
-        idx + 1,
-        inv.projekt,
-        'Faktura',
-        inv.nrFaktury,
-        kwotaFormatted,
-      ]);
-    } else {
-      const rateVal = inv.waluta === 'EUR' ? (inv.kursEurPln || exchangeRate).toFixed(4) : '-';
-      sheet1Data.push([
-        idx + 1,
-        inv.projekt,
-        'Faktura',
-        inv.nrFaktury,
-        kwotaFormatted,
-        rateVal,
-        inv.kwotaPln.toFixed(2) + ' PLN',
-      ]);
-    }
+  const excelBlob = new Blob(['\ufeff' + htmlTable], {
+    type: 'application/vnd.ms-excel;charset=utf-8',
   });
 
-  sheet1Data.push([]);
-  sheet1Data.push(['Suma walutowa:', `${sumNettoEur.toFixed(2)} € ${sumNettoPln > 0 ? '+ ' + sumNettoPln.toFixed(2) + ' zł' : ''}`]);
-  sheet1Data.push(['Kurs bazowy EUR:', exchangeRate.toFixed(4) + ' PLN']);
-  sheet1Data.push(['Suma PLN:', sumConvertedPln.toFixed(2) + ' PLN']);
-  sheet1Data.push(['Premia 1% (Brutto):', bonus1Percent.toFixed(2) + ' PLN']);
-  sheet1Data.push([]);
-  sheet1Data.push([rateSourceText]);
-  sheet1Data.push(['Tabela A kursów średnich NBP']);
-  sheet1Data.push([`1 EUR = ${exchangeRate.toFixed(4)} zł`]);
-  sheet1Data.push([]);
-  sheet1Data.push(['Podpis:', '................................................']);
-
-  const ws1 = XLSX.utils.aoa_to_sheet(sheet1Data);
-  XLSX.utils.book_append_sheet(wb, ws1, 'Karta Premii');
-
-  // --- SHEET 2: Obciążenie Projektów (02.jpg) ---
-  const sheet2Data: (string | number)[][] = [
-    [`Premia ${personName} - ${monthName}`],
-    ['Premia - kwoty z podziałem na projekty.'],
-    [],
-    ['Lp.', 'Projekt', 'Kwota EUR - Projekt-Serwis', 'Kwota obciążenia - Projekt-Serwis (1% PLN)'],
-  ];
-
-  // Group by project
-  const projectMap = new Map<string, { eur: number; pln: number }>();
-  invoices.forEach((inv) => {
-    const cur = projectMap.get(inv.projekt) || { eur: 0, pln: 0 };
-    if (inv.waluta === 'EUR') {
-      cur.eur += inv.netto;
-    } else {
-      cur.pln += inv.netto;
-    }
-    projectMap.set(inv.projekt, cur);
-  });
-
-  let pIdx = 1;
-  let totalCostPln = 0;
-  projectMap.forEach((val, prj) => {
-    // Project cost is 1% of its PLN equivalent
-    const prjPlnEquivalent = (val.eur * exchangeRate) + val.pln;
-    const costPln = Math.round(prjPlnEquivalent * 0.01 * 100) / 100;
-    totalCostPln += costPln;
-
-    const eurLabel = val.eur > 0 ? `${val.eur.toFixed(2)} €` : `${val.pln.toFixed(2)} zł`;
-    sheet2Data.push([
-      pIdx++,
-      prj,
-      eurLabel,
-      `${costPln.toFixed(2)} zł`,
-    ]);
-  });
-
-  sheet2Data.push([]);
-  sheet2Data.push(['', '', 'SUMA OBCIĄŻEŃ:', `${totalCostPln.toFixed(2)} zł`]);
-
-  const ws2 = XLSX.utils.aoa_to_sheet(sheet2Data);
-  XLSX.utils.book_append_sheet(wb, ws2, 'Podział na Projekty');
-
-  // Trigger download
-  const filename = `Premia_${personName.replace(/\s+/g, '_')}_${monthName.replace(/\s+/g, '_')}.xlsx`;
-  XLSX.writeFile(wb, filename);
+  const url = URL.createObjectURL(excelBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Premia_${personName.replace(/\s+/g, '_')}_${monthName.replace(/\s+/g, '_')}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

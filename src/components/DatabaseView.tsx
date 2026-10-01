@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { StoredInvoice, InvoiceStatus, AppSettings } from '../types/bonus';
+import { StoredInvoice, InvoiceStatus, AppSettings, DatabaseFilters } from '../types/bonus';
 import { getPersonColor, formatCurrency, formatMonthName, formatRate } from '../utils/colors';
 import { getEurExchangeRateForDate, getEurRateForEndOfMonth } from '../services/nbpService';
 import { saveStoredInvoices, saveAppSettings } from '../services/storageService';
@@ -20,7 +20,9 @@ import {
   Bookmark,
   X,
   Edit2,
-  ShieldAlert,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 
 interface DatabaseViewProps {
@@ -31,6 +33,16 @@ interface DatabaseViewProps {
   onNavigateToSettlement: (month: string) => void;
 }
 
+const DEFAULT_FILTERS: DatabaseFilters = {
+  rangeStartMonth: 'all',
+  rangeEndMonth: 'all',
+  includeFreeInvoices: true,
+  filterStatus: 'all',
+  searchTerm: '',
+  sortField: null,
+  sortDirection: 'asc',
+};
+
 export const DatabaseView: React.FC<DatabaseViewProps> = ({
   invoices,
   onInvoicesChange,
@@ -38,13 +50,15 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
   onSettingsChange,
   onNavigateToSettlement,
 }) => {
-  const [searchTerm, setSearchTerm] = useState('');
+  // Read persistent filters from settings (or defaults) so tab switching NEVER resets selection
+  const filters: DatabaseFilters = settings.dbFilters || DEFAULT_FILTERS;
 
-  // Range filter: Od - Do
-  const [rangeStartMonth, setRangeStartMonth] = useState<string>('all');
-  const [rangeEndMonth, setRangeEndMonth] = useState<string>('all');
-  const [includeFreeInvoices, setIncludeFreeInvoices] = useState<boolean>(true);
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const updateFilters = (partial: Partial<DatabaseFilters>) => {
+    const updatedFilters = { ...filters, ...partial };
+    const updatedSettings = { ...settings, dbFilters: updatedFilters };
+    onSettingsChange(updatedSettings);
+    saveAppSettings(updatedSettings);
+  };
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isUpdatingRates, setIsUpdatingRates] = useState(false);
@@ -69,7 +83,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
         list.push(inv.miesiacRozliczeniowy);
       }
     });
-    return Array.from(new Set(list)).sort(); // Ascending for range selection
+    return Array.from(new Set(list)).sort();
   }, [invoices, settings.customMonths]);
 
   // Handle adding new month
@@ -88,6 +102,19 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     setIsNewMonthModalOpen(false);
   };
 
+  // Toggle column sorting
+  const handleHeaderSort = (field: string) => {
+    if (filters.sortField === field) {
+      if (filters.sortDirection === 'asc') {
+        updateFilters({ sortDirection: 'desc' });
+      } else {
+        updateFilters({ sortField: null, sortDirection: 'asc' });
+      }
+    } else {
+      updateFilters({ sortField: field, sortDirection: 'asc' });
+    }
+  };
+
   // Toggle single item selection (only if not ROZLICZONA)
   const toggleSelectRow = (inv: StoredInvoice) => {
     if (inv.status === 'ROZLICZONA') {
@@ -102,33 +129,29 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     });
   };
 
-  // Filtered invoices by Range and Search
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((inv) => {
-      // Free invoices
+  // Filtered and sorted invoices
+  const filteredAndSortedInvoices = useMemo(() => {
+    let result = invoices.filter((inv) => {
       const isFree = !inv.miesiacRozliczeniowy || inv.status === 'WOLNA';
 
       if (isFree) {
-        if (!includeFreeInvoices) return false;
+        if (!filters.includeFreeInvoices) return false;
       } else {
-        // Range check
-        if (rangeStartMonth !== 'all' && inv.miesiacRozliczeniowy < rangeStartMonth) {
+        if (filters.rangeStartMonth !== 'all' && inv.miesiacRozliczeniowy < filters.rangeStartMonth) {
           return false;
         }
-        if (rangeEndMonth !== 'all' && inv.miesiacRozliczeniowy > rangeEndMonth) {
+        if (filters.rangeEndMonth !== 'all' && inv.miesiacRozliczeniowy > filters.rangeEndMonth) {
           return false;
         }
       }
 
-      // Status
-      if (filterStatus === 'WOLNA' && inv.status !== 'WOLNA') return false;
-      if (filterStatus === 'ZAREZERWOWANA' && inv.status !== 'ZAREZERWOWANA') return false;
-      if (filterStatus === 'ROZLICZONA' && inv.status !== 'ROZLICZONA') return false;
-      if (filterStatus === 'BLOCKED' && !inv.isBlocked) return false;
+      if (filters.filterStatus === 'WOLNA' && inv.status !== 'WOLNA') return false;
+      if (filters.filterStatus === 'ZAREZERWOWANA' && inv.status !== 'ZAREZERWOWANA') return false;
+      if (filters.filterStatus === 'ROZLICZONA' && inv.status !== 'ROZLICZONA') return false;
+      if (filters.filterStatus === 'BLOCKED' && !inv.isBlocked) return false;
 
-      // Search
-      if (searchTerm.trim()) {
-        const q = searchTerm.toLowerCase();
+      if (filters.searchTerm.trim()) {
+        const q = filters.searchTerm.toLowerCase();
         const match =
           inv.nrFaktury.toLowerCase().includes(q) ||
           inv.projekt.toLowerCase().includes(q) ||
@@ -137,12 +160,32 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
       }
       return true;
     });
-  }, [invoices, rangeStartMonth, rangeEndMonth, includeFreeInvoices, filterStatus, searchTerm]);
 
-  // Select all or deselect all visible (excluding settled ones)
+    // Sorting
+    if (filters.sortField) {
+      const field = filters.sortField;
+      const factor = filters.sortDirection === 'asc' ? 1 : -1;
+
+      result = [...result].sort((a: any, b: any) => {
+        let valA = a[field];
+        let valB = b[field];
+
+        if (valA === undefined || valA === null) valA = '';
+        if (valB === undefined || valB === null) valB = '';
+
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          return (valA - valB) * factor;
+        }
+        return String(valA).localeCompare(String(valB), 'pl', { numeric: true }) * factor;
+      });
+    }
+
+    return result;
+  }, [invoices, filters]);
+
   const selectableVisibleIds = useMemo(() => {
-    return filteredInvoices.filter((i) => i.status !== 'ROZLICZONA').map((i) => i.id);
-  }, [filteredInvoices]);
+    return filteredAndSortedInvoices.filter((i) => i.status !== 'ROZLICZONA').map((i) => i.id);
+  }, [filteredAndSortedInvoices]);
 
   const isAllSelectableSelected =
     selectableVisibleIds.length > 0 && selectableVisibleIds.every((id) => selectedIds.has(id));
@@ -159,7 +202,6 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     });
   };
 
-  // Batch delete (only non-settled)
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
     if (confirm(`Czy na pewno chcesz usunąć zaznaczone (${selectedIds.size}) faktury z bazy danych?`)) {
@@ -172,7 +214,6 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     }
   };
 
-  // Batch assign month (only non-settled)
   const handleBatchAssignMonth = (monthVal: string) => {
     if (selectedIds.size === 0) return;
     const updated = invoices.map((inv) => {
@@ -196,7 +237,6 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     setTimeout(() => setFeedbackMessage(null), 4000);
   };
 
-  // Change single invoice month (prevented if ROZLICZONA)
   const handleInvoiceMonthChange = (id: string, newMonth: string) => {
     const targetInv = invoices.find((i) => i.id === id);
     if (targetInv && targetInv.status === 'ROZLICZONA') {
@@ -218,7 +258,6 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     saveStoredInvoices(updated);
   };
 
-  // Toggle invoice lock
   const toggleInvoiceLock = (inv: StoredInvoice) => {
     if (inv.status === 'ROZLICZONA') {
       alert('Ta faktura jest ROZLICZONA i nie można zmienić jej blokady.');
@@ -234,7 +273,6 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     saveStoredInvoices(updated);
   };
 
-  // Auto-allocation algorithm
   const handleAutoAllocateInvoices = () => {
     const target = parseFloat(targetAmountInput.replace(/\s+/g, '').replace(',', '.'));
     if (isNaN(target) || target <= 0) {
@@ -279,7 +317,6 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     setTimeout(() => setFeedbackMessage(null), 6000);
   };
 
-  // Re-fetch exchange rates from NBP API
   const handleRefreshNbpRates = async () => {
     setIsUpdatingRates(true);
     try {
@@ -362,14 +399,14 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     setEditingRateId(null);
   };
 
-  // Exact Monetary Summary Statistics (No piece counts as requested!)
+  // Exact Monetary Summary Statistics (Amounts only, no counts)
   const stats = useMemo(() => {
     let sumWolnePln = 0;
     let sumZarezerwowanePln = 0;
     let sumRozliczonePln = 0;
     let totalPln = 0;
 
-    filteredInvoices.forEach((inv) => {
+    filteredAndSortedInvoices.forEach((inv) => {
       totalPln += inv.kwotaPln;
       if (inv.status === 'ROZLICZONA') {
         sumRozliczonePln += inv.kwotaPln;
@@ -393,7 +430,19 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
       totalPln,
       bonus1Percent,
     };
-  }, [filteredInvoices]);
+  }, [filteredAndSortedInvoices]);
+
+  // Render sort icon on headers
+  const renderSortIndicator = (field: string) => {
+    if (filters.sortField !== field) {
+      return <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-60 inline ml-1" />;
+    }
+    return filters.sortDirection === 'asc' ? (
+      <ArrowUp className="w-3 h-3 text-blue-600 inline ml-1 font-bold" />
+    ) : (
+      <ArrowDown className="w-3 h-3 text-blue-600 inline ml-1 font-bold" />
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -409,7 +458,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
               Baza Faktur i Przypisania Miesięcy
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
-              Faktury rozliczone są całkowicie zablokowane przed edycją i usunięciem. Zakres miesięcy pozwala filtrować pozycje od danego miesiąca do kolejnego.
+              Zakres miesięcy i filtry są <strong>automatycznie zapamiętywane</strong> po przechodzeniu między zakładkami. Kliknij nagłówek kolumny, aby posortować rekordy.
             </p>
           </div>
 
@@ -468,7 +517,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           </div>
         )}
 
-        {/* Monetary Summary Statistics Bar (Amounts only, no count badges) */}
+        {/* Monetary Summary Statistics Bar */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
           <div className="p-3 rounded-lg bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900">
             <span className="text-[11px] uppercase tracking-wider font-semibold text-amber-800 dark:text-amber-400 block">
@@ -516,15 +565,15 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           </div>
         </div>
 
-        {/* Range Filters: Od - Do */}
+        {/* Range Filters: Od - Do & Search */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {/* Search */}
           <div className="relative flex-1 min-w-[180px]">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={filters.searchTerm}
+              onChange={(e) => updateFilters({ searchTerm: e.target.value })}
               placeholder="Szukaj po nr faktury, projekcie..."
               className="w-full text-xs pl-9 pr-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
             />
@@ -534,8 +583,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           <div className="flex items-center gap-1.5">
             <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">Od:</span>
             <select
-              value={rangeStartMonth}
-              onChange={(e) => setRangeStartMonth(e.target.value)}
+              value={filters.rangeStartMonth}
+              onChange={(e) => updateFilters({ rangeStartMonth: e.target.value })}
               className="text-xs py-2 px-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none"
             >
               <option value="all">Początek</option>
@@ -551,8 +600,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           <div className="flex items-center gap-1.5">
             <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">Do:</span>
             <select
-              value={rangeEndMonth}
-              onChange={(e) => setRangeEndMonth(e.target.value)}
+              value={filters.rangeEndMonth}
+              onChange={(e) => updateFilters({ rangeEndMonth: e.target.value })}
               className="text-xs py-2 px-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none"
             >
               <option value="all">Koniec</option>
@@ -568,8 +617,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           <label className="flex items-center gap-1.5 px-2.5 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 cursor-pointer select-none">
             <input
               type="checkbox"
-              checked={includeFreeInvoices}
-              onChange={(e) => setIncludeFreeInvoices(e.target.checked)}
+              checked={filters.includeFreeInvoices}
+              onChange={(e) => updateFilters({ includeFreeInvoices: e.target.checked })}
               className="w-3.5 h-3.5 text-blue-600 rounded"
             />
             <span className="text-slate-700 dark:text-slate-300 font-medium">
@@ -579,8 +628,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
 
           {/* Status Filter */}
           <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
+            value={filters.filterStatus}
+            onChange={(e) => updateFilters({ filterStatus: e.target.value })}
             className="text-xs py-2 px-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none"
           >
             <option value="all">Wszystkie statusy</option>
@@ -592,7 +641,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
         </div>
       </div>
 
-      {/* Group Action Toolbar (Visible when 1 or more items selected) */}
+      {/* Group Action Toolbar */}
       {selectedIds.size > 0 && (
         <div className="bg-slate-900 text-white dark:bg-slate-800 p-3.5 rounded-xl shadow-lg flex flex-wrap items-center justify-between gap-3 border border-slate-700">
           <div className="flex items-center gap-3">
@@ -600,7 +649,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
               Zaznaczono: {selectedIds.size}
             </span>
             <span className="text-xs text-slate-300">
-              Wykonaj akcję dla zaznaczonych (tylko nierozliczone):
+              Akcje dla zaznaczonych (faktury rozliczone są chronione):
             </span>
           </div>
 
@@ -651,12 +700,12 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
         </div>
       )}
 
-      {/* Main Database Table */}
+      {/* Main Database Table with Clickable Sort Headers */}
       <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/50 text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/50 text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider select-none">
                 <th className="py-3 px-3 w-10 text-center">
                   <button
                     type="button"
@@ -672,31 +721,80 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                   </button>
                 </th>
                 <th className="py-3 px-3 w-10 text-center">Blokada</th>
-                <th className="py-3 px-3">Nr Faktury</th>
-                <th className="py-3 px-3">Projekt</th>
-                <th className="py-3 px-3">Data wystawienia</th>
-                {/* Editable Month Column */}
-                <th className="py-3 px-3 text-center min-w-[150px]">
-                  Miesiąc Rozliczeniowy
+
+                <th
+                  onClick={() => handleHeaderSort('nrFaktury')}
+                  className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                >
+                  Nr Faktury {renderSortIndicator('nrFaktury')}
                 </th>
-                <th className="py-3 px-3 text-right">Netto</th>
-                <th className="py-3 px-3 text-center">Kurs EUR (NBP)</th>
-                <th className="py-3 px-3 text-right font-bold text-slate-800 dark:text-slate-200">
-                  Przeliczone PLN
+
+                <th
+                  onClick={() => handleHeaderSort('projekt')}
+                  className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                >
+                  Projekt {renderSortIndicator('projekt')}
                 </th>
-                <th className="py-3 px-3 text-center">Status</th>
-                <th className="py-3 px-3">Prowadzący</th>
+
+                <th
+                  onClick={() => handleHeaderSort('dataFaktury')}
+                  className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                >
+                  Data wystawienia {renderSortIndicator('dataFaktury')}
+                </th>
+
+                <th
+                  onClick={() => handleHeaderSort('miesiacRozliczeniowy')}
+                  className="py-3 px-3 text-center min-w-[150px] cursor-pointer hover:text-blue-600 transition"
+                >
+                  Miesiąc {renderSortIndicator('miesiacRozliczeniowy')}
+                </th>
+
+                <th
+                  onClick={() => handleHeaderSort('netto')}
+                  className="py-3 px-3 text-right cursor-pointer hover:text-blue-600 transition"
+                >
+                  Netto {renderSortIndicator('netto')}
+                </th>
+
+                <th
+                  onClick={() => handleHeaderSort('kursEurPln')}
+                  className="py-3 px-3 text-center cursor-pointer hover:text-blue-600 transition"
+                >
+                  Kurs EUR {renderSortIndicator('kursEurPln')}
+                </th>
+
+                <th
+                  onClick={() => handleHeaderSort('kwotaPln')}
+                  className="py-3 px-3 text-right font-bold text-slate-800 dark:text-slate-200 cursor-pointer hover:text-blue-600 transition"
+                >
+                  Przeliczone PLN {renderSortIndicator('kwotaPln')}
+                </th>
+
+                <th
+                  onClick={() => handleHeaderSort('status')}
+                  className="py-3 px-3 text-center cursor-pointer hover:text-blue-600 transition"
+                >
+                  Status {renderSortIndicator('status')}
+                </th>
+
+                <th
+                  onClick={() => handleHeaderSort('prowadzacy')}
+                  className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                >
+                  Prowadzący {renderSortIndicator('prowadzacy')}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredInvoices.length === 0 ? (
+              {filteredAndSortedInvoices.length === 0 ? (
                 <tr>
                   <td colSpan={11} className="py-12 text-center text-slate-500">
                     Brak faktur spełniających wybrane kryteria zakresu.
                   </td>
                 </tr>
               ) : (
-                filteredInvoices.map((inv) => {
+                filteredAndSortedInvoices.map((inv) => {
                   const personColor = getPersonColor(inv.prowadzacy);
                   const isEur = inv.waluta === 'EUR';
                   const isSettled = inv.status === 'ROZLICZONA';
@@ -715,7 +813,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                           : 'hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-800 dark:text-slate-200'
                       }`}
                     >
-                      {/* Checkbox for batch actions (disabled if settled) */}
+                      {/* Checkbox (disabled if settled) */}
                       <td className="py-2.5 px-3 text-center">
                         <input
                           type="checkbox"
@@ -725,7 +823,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                           className={`w-4 h-4 rounded text-blue-600 focus:ring-blue-500 ${
                             isSettled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
                           }`}
-                          title={isSettled ? 'Faktura rozliczona - nie można zaznaczyć do usunięcia ani zmiany' : 'Zaznacz fakturę'}
+                          title={isSettled ? 'Faktura rozliczona - nie można zaznaczyć do usunięcia' : 'Zaznacz fakturę'}
                         />
                       </td>
 
@@ -773,12 +871,12 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         {inv.dataFaktury}
                       </td>
 
-                      {/* Editable Miesiąc Rozliczeniowy (Disabled if settled) */}
+                      {/* Editable Miesiąc Rozliczeniowy (Locked if settled) */}
                       <td className="py-2.5 px-3 text-center">
                         {isSettled ? (
                           <div
                             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300 cursor-not-allowed"
-                            title="Faktura jest ROZLICZONA. Miesiąc jest całkowicie zablokowany. Aby zmienić, wejdź w Kartę Premii i cofnij do statusu Zarezerwowana."
+                            title="Faktura jest ROZLICZONA. Miesiąc jest całkowicie zablokowany."
                           >
                             <Lock className="w-3 h-3 text-emerald-700" />
                             {formatMonthName(inv.miesiacRozliczeniowy)}
@@ -864,7 +962,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         {formatCurrency(inv.kwotaPln, 'PLN')}
                       </td>
 
-                      {/* Status badge */}
+                      {/* Status */}
                       <td className="py-2.5 px-3 text-center">
                         {inv.status === 'ROZLICZONA' ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">

@@ -41,12 +41,23 @@ export interface ExchangeRateResult {
   source: 'NBP' | 'CACHE' | 'MANUAL' | 'DEFAULT';
 }
 
+export interface DatabaseFilters {
+  rangeStartMonth: string;
+  rangeEndMonth: string;
+  includeFreeInvoices: boolean;
+  filterStatus: string;
+  searchTerm: string;
+  sortField: string | null;
+  sortDirection: 'asc' | 'desc';
+}
+
 export interface AppSettings {
   useEndOfMonthRate: boolean;
   activeMonth: string; // e.g. "2026-07"
   defaultBonusPercent: number; // e.g. 1.0
   beneficiaryName: string; // e.g. "Jan Kowalski"
   customMonths: string[]; // List of available settlement months
+  dbFilters?: DatabaseFilters;
 }
 
 export interface ProjectAllocationRow {

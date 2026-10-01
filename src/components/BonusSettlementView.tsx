@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { StoredInvoice, AppSettings } from '../types/bonus';
 import { formatCurrency, formatMonthName, formatRate } from '../utils/colors';
-import { exportSettlementToExcel } from '../services/excelService';
+import { exportSettlementToExcel, exportSettlementToHtmlFile } from '../services/excelService';
 import { downloadElementAsJpg, downloadElementAsPdf } from '../services/exportService';
+import { getEurExchangeRateForDate } from '../services/nbpService';
 import { saveStoredInvoices, saveAppSettings } from '../services/storageService';
 import {
   FileText,
@@ -15,6 +16,9 @@ import {
   Edit2,
   Check,
   RotateCcw,
+  Code,
+  Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 
 interface BonusSettlementViewProps {
@@ -43,6 +47,26 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
   const [nameInput, setNameInput] = useState(settings.beneficiaryName || 'Jan Kowalski');
 
   const currentMonth = selectedMonth || settings.activeMonth || '2026-07';
+
+  // Custom date picker for NBP rate
+  const [customRateDate, setCustomRateDate] = useState<string>(() => {
+    const [y, m] = currentMonth.split('-');
+    const lastDay = new Date(parseInt(y, 10), parseInt(m, 10), 0).toISOString().split('T')[0];
+    return lastDay;
+  });
+
+  const [isFetchingDateRate, setIsFetchingDateRate] = useState(false);
+  const [customRateOverride, setCustomRateOverride] = useState<string>('');
+  const [customTableOverride, setCustomTableOverride] = useState<string>('');
+
+  // Update date picker whenever month changes
+  useEffect(() => {
+    if (currentMonth && currentMonth.includes('-')) {
+      const [y, m] = currentMonth.split('-');
+      const lastDay = new Date(parseInt(y, 10), parseInt(m, 10), 0).toISOString().split('T')[0];
+      setCustomRateDate(lastDay);
+    }
+  }, [currentMonth]);
 
   const availableMonths = useMemo(() => {
     const list = [...(settings.customMonths || [])];
@@ -169,7 +193,78 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     setTimeout(() => setNotification(null), 5000);
   };
 
-  // Export to Excel
+  // Fetch exchange rate from NBP for chosen calendar date
+  const handleFetchRateForChosenDate = async () => {
+    if (!customRateDate) return;
+    setIsFetchingDateRate(true);
+    try {
+      const res = await getEurExchangeRateForDate(customRateDate);
+      const appliedRate = res.rate;
+      const appliedTable = res.tableNo.startsWith('Tabela') ? res.tableNo : `Tabela nr ${res.tableNo}`;
+
+      // Apply to all EUR invoices in this settlement month
+      const updated = invoices.map((inv) => {
+        if (inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked) {
+          if (inv.waluta === 'EUR') {
+            const kwotaPln = Math.round(inv.netto * appliedRate * 100) / 100;
+            return {
+              ...inv,
+              kursEurPln: appliedRate,
+              nrTabeliNbp: appliedTable,
+              dataKursuNbp: res.effectiveDate || customRateDate,
+              kwotaPln,
+            };
+          }
+        }
+        return inv;
+      });
+
+      onInvoicesChange(updated);
+      saveStoredInvoices(updated);
+      setNotification(`Pobrano kurs z NBP dla daty ${customRateDate}: 1 EUR = ${formatRate(appliedRate)} zł (${appliedTable})!`);
+      setTimeout(() => setNotification(null), 5000);
+    } catch (err) {
+      console.error('Failed to fetch NBP rate', err);
+      alert('Nie udało się pobrać kursu dla podanej daty. Możesz wpisać kurs ręcznie.');
+    } finally {
+      setIsFetchingDateRate(false);
+    }
+  };
+
+  // Apply custom manual rate
+  const handleApplyManualRate = () => {
+    const parsed = parseFloat(customRateOverride.replace(',', '.'));
+    if (isNaN(parsed) || parsed <= 0) {
+      alert('Wpisz poprawny kurs (np. 4,3128)');
+      return;
+    }
+    const tableText = customTableOverride.trim() || `Tabela nr 147/A/NBP/2026 z dnia ${customRateDate}`;
+
+    const updated = invoices.map((inv) => {
+      if (inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked) {
+        if (inv.waluta === 'EUR') {
+          const kwotaPln = Math.round(inv.netto * parsed * 100) / 100;
+          return {
+            ...inv,
+            kursEurPln: parsed,
+            nrTabeliNbp: tableText,
+            dataKursuNbp: customRateDate,
+            kwotaPln,
+          };
+        }
+      }
+      return inv;
+    });
+
+    onInvoicesChange(updated);
+    saveStoredInvoices(updated);
+    setCustomRateOverride('');
+    setCustomTableOverride('');
+    setNotification(`Ręcznie ustawiono kurs dla miesiąca ${formatMonthName(currentMonth)}: 1 EUR = ${formatRate(parsed)} zł!`);
+    setTimeout(() => setNotification(null), 5000);
+  };
+
+  // Export to Excel (Styled 01.jpg layout)
   const handleExportExcel = () => {
     const monthFormatted = formatMonthName(currentMonth);
     const tableText = `Tabela nr ${activeMonthRate.tableNo} z dnia ${activeMonthRate.date}`;
@@ -188,6 +283,22 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     );
   };
 
+  // Export to standalone HTML
+  const handleExportHtml = () => {
+    const monthFormatted = formatMonthName(currentMonth);
+    const tableText = `Tabela nr ${activeMonthRate.tableNo} z dnia ${activeMonthRate.date}`;
+    exportSettlementToHtmlFile(
+      settings.beneficiaryName,
+      monthFormatted,
+      eligibleInvoices,
+      calculations.sumEur,
+      activeMonthRate.rate,
+      calculations.totalConvertedPln,
+      calculations.bonus1Percent,
+      tableText
+    );
+  };
+
   // Export to PDF
   const handleExportPdf = async () => {
     if (!printRef.current) return;
@@ -201,7 +312,6 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
       setTimeout(() => setNotification(null), 4000);
     } catch (err) {
       console.error('PDF export failed', err);
-      // Native fallback
       window.print();
     } finally {
       setIsExporting(false);
@@ -277,7 +387,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               )}
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Wydruk mieści się na jednej stronie A4 pion bez nagłówków przeglądarki i adresów URL.
+              Wydruk i eksporty (PDF, JPG, HTML, Excel) dokładnie odzwierciedlają format Karty Premii.
             </p>
           </div>
 
@@ -308,16 +418,25 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               {isExporting ? 'Generowanie...' : 'JPG'}
             </button>
             <button
+              onClick={handleExportHtml}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white shadow-xs transition"
+              title="Pobierz jako samodzielny plik HTML"
+            >
+              <Code className="w-3.5 h-3.5" />
+              HTML
+            </button>
+            <button
               onClick={handleExportExcel}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition"
+              title="Eksportuj do pliku Excel odzwierciedlającego szatę graficzną"
             >
               <FileSpreadsheet className="w-3.5 h-3.5" />
-              Excel (.xlsx)
+              Excel (ze stylami)
             </button>
           </div>
         </div>
 
-        {/* Filters */}
+        {/* Row 1: Month Selector & Settlement Confirmation */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
           <div>
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
@@ -376,6 +495,65 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
             )}
           </div>
         </div>
+
+        {/* Row 2: Custom Date Picker for NBP Rate & Manual Override */}
+        <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-50 dark:bg-slate-950/60 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800">
+          <div>
+            <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+              Wybierz dzień z kalendarza dla kursu NBP:
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={customRateDate}
+                onChange={(e) => setCustomRateDate(e.target.value)}
+                className="w-full text-xs p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+              />
+              <button
+                onClick={handleFetchRateForChosenDate}
+                disabled={isFetchingDateRate}
+                className="inline-flex items-center gap-1 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold whitespace-nowrap transition disabled:opacity-50"
+                title="Pobierz oficjalny kurs NBP dla tego wybranego dnia"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isFetchingDateRate ? 'animate-spin' : ''}`} />
+                {isFetchingDateRate ? 'Pobieranie...' : 'Pobierz kurs'}
+              </button>
+            </div>
+          </div>
+
+          <div className="md:col-span-2 flex flex-wrap items-end gap-2">
+            <div className="flex-1 min-w-[120px]">
+              <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                Lub wpisz kurs ręcznie:
+              </label>
+              <input
+                type="text"
+                value={customRateOverride}
+                onChange={(e) => setCustomRateOverride(e.target.value)}
+                placeholder="np. 4,3128"
+                className="w-full text-xs p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+              />
+            </div>
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                Opis tabeli:
+              </label>
+              <input
+                type="text"
+                value={customTableOverride}
+                onChange={(e) => setCustomTableOverride(e.target.value)}
+                placeholder="np. Tabela nr 147/A/NBP/2026"
+                className="w-full text-xs p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+              />
+            </div>
+            <button
+              onClick={handleApplyManualRate}
+              className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold whitespace-nowrap transition"
+            >
+              Zastosuj kurs
+            </button>
+          </div>
+        </div>
       </div>
 
       {notification && (
@@ -417,11 +595,9 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                   <th className="border border-black py-1.5 px-3 text-center font-bold">
                     Kwota
                   </th>
-                  {/* Exchange rate column: ALWAYS visible */}
                   <th className="border border-black py-1.5 px-2 text-center font-bold w-24">
                     Kurs EUR
                   </th>
-                  {/* Kwota w PLN column */}
                   <th className="border border-black py-1.5 px-3 text-center font-bold">
                     Kwota w PLN
                   </th>
