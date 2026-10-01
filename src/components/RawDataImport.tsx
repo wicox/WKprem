@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { RawInvoiceInput, StoredInvoice } from '../types/bonus';
 import { parseExcelPaste } from '../services/excelService';
 import { importInvoicesToDb } from '../services/storageService';
@@ -11,10 +11,9 @@ import {
   ArrowRight,
   Trash2,
   Sparkles,
-  Calendar,
   Lock,
   Unlock,
-  Layers,
+  Calendar,
 } from 'lucide-react';
 
 interface RawDataImportProps {
@@ -24,10 +23,10 @@ interface RawDataImportProps {
 }
 
 const SAMPLE_PROMPT_DATA = `Nr faktury\tProwadzący\tProjekt\tNetto\tWaluta\tData Faktury
-FW 2/26/042\tWojciech Kozioł\tP/757/31\t5165,1\tEUR\t20.06.2026
-FW 2/26/043\tWojciech Robak\tP/979/12\t21582,81\tPLN\t25.06.2026
-FW 2/26/044\tMateusz Hluzow\tP/1073/24\t190657,36\tEUR\t29.06.2026
-FW 2/26/045\tWojciech Kozioł\tP/979/14\t3320,88\tPLN\t30.06.2026`;
+FW 2/26/042\tJan Kowalski\tP/757/31\t5165,1\tEUR\t20.06.2026
+FW 2/26/043\tAdam Nowak\tP/979/12\t21582,81\tPLN\t25.06.2026
+FW 2/26/044\tJan Kowalski\tP/1073/24\t190657,36\tEUR\t29.06.2026
+FW 2/26/045\tAdam Nowak\tP/979/14\t3320,88\tPLN\t30.06.2026`;
 
 export const RawDataImport: React.FC<RawDataImportProps> = ({
   existingInvoices,
@@ -35,33 +34,19 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
   onNavigateToDb,
 }) => {
   const [pasteText, setPasteText] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState('2026-06');
   const [parsedItems, setParsedItems] = useState<RawInvoiceInput[]>([]);
   const [importNotification, setImportNotification] = useState<{
     type: 'success' | 'warning' | 'error';
     message: string;
   } | null>(null);
 
-  // Month options generator
-  const monthOptions = [
-    { value: '2026-05', label: 'Maj 2026' },
-    { value: '2026-06', label: 'Czerwiec 2026' },
-    { value: '2026-07', label: 'Lipiec 2026' },
-    { value: '2026-08', label: 'Sierpień 2026' },
-    { value: '2026-09', label: 'Wrzesień 2026' },
-    { value: '2026-10', label: 'Październik 2026' },
-  ];
-
   // Auto-parse when paste text changes
-  const handleProcessText = (text: string, monthVal: string) => {
+  const handleProcessText = (text: string) => {
     if (!text.trim()) {
       setParsedItems([]);
       return;
     }
-    const result = parseExcelPaste(text, monthVal);
-    if (result.detectedMonth && !monthVal) {
-      setSelectedMonth(result.detectedMonth);
-    }
+    const result = parseExcelPaste(text);
     setParsedItems(result.invoices);
     setImportNotification(null);
   };
@@ -69,23 +54,12 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
   const handlePasteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setPasteText(val);
-    handleProcessText(val, selectedMonth);
-  };
-
-  const handleMonthChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newMonth = e.target.value;
-    setSelectedMonth(newMonth);
-    setParsedItems((prev) =>
-      prev.map((item) => ({
-        ...item,
-        miesiacRozliczeniowy: newMonth,
-      }))
-    );
+    handleProcessText(val);
   };
 
   const loadSampleData = (text: string) => {
     setPasteText(text);
-    handleProcessText(text, selectedMonth);
+    handleProcessText(text);
   };
 
   // Toggle single item block
@@ -104,7 +78,7 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
     );
   };
 
-  // Check which parsed items already exist in database
+  // Check duplicates against existing database
   const existingSet = new Set(
     existingInvoices.map((inv) => inv.nrFaktury.toLowerCase().trim())
   );
@@ -130,16 +104,15 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
     if (result.duplicateCount > 0) {
       setImportNotification({
         type: 'warning',
-        message: `Przeniesiono ${result.addedCount} nowych faktur. Pominięto ${result.duplicateCount} duplikatów: (${result.duplicateNumbers.join(', ')}) oraz ${result.skippedBlockedCount} zablokowanych.`,
+        message: `Przeniesiono ${result.addedCount} nowych faktur do bazy. Pominięto ${result.duplicateCount} istniejących duplikatów oraz ${result.skippedBlockedCount} zablokowanych.`,
       });
     } else {
       setImportNotification({
         type: 'success',
-        message: `Sukces! Pomyślnie przeniesiono ${result.addedCount} faktur do Bazy Danych.`,
+        message: `Pomyślnie przeniesiono ${result.addedCount} faktur do Bazy Danych! Faktury trafiły ze statusem „WOLNA” i są gotowe do przypisania do miesiąca.`,
       });
     }
 
-    // Keep only blocked items or clear
     if (result.skippedBlockedCount > 0) {
       setParsedItems((prev) => prev.filter((i) => i.isBlocked));
     } else {
@@ -162,8 +135,8 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
               Wklej dane faktur z Excela
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
-              Skopiuj wiersze bezpośrednio z arkusza Excel (wraz z nagłówkiem lub bez) i wklej w poniższe pole jednym ruchem.
-              Możesz zablokować wybrane pozycje (czerwone wyróżnienie) przed zatwierdzeniem do bazy danych.
+              Skopiuj wiersze bezpośrednio z arkusza Excel i wklej jednym ruchem.
+              Każda faktura zachowuje swoją datę wystawienia. Przypisanie do miesiąca rozliczeniowego wykonujesz elastycznie w Bazie Danych.
             </p>
           </div>
 
@@ -171,7 +144,7 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
             <button
               onClick={() => loadSampleData(SAMPLE_PROMPT_DATA)}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition"
-              title="Wstaw przykładowe dane z zapytania (Wojciech Kozioł, Wojciech Robak, Mateusz Hluzow)"
+              title="Wstaw przykładowe zanonimizowane dane"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-500" />
               Wklej dane przykładowe
@@ -192,52 +165,18 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
           </div>
         </div>
 
-        {/* Input Controls */}
-        <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="md:col-span-2">
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-              Pole wklejania z Excela (Tab-Separated / Tabela)
-            </label>
-            <div className="relative">
-              <textarea
-                value={pasteText}
-                onChange={handlePasteChange}
-                placeholder="Wklej tutaj dane skopiowane z Excela (np. Nr faktury | Prowadzący | Projekt | Netto | Waluta | Data Faktury)..."
-                rows={4}
-                className="w-full font-mono text-xs p-3.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition resize-y"
-              />
-            </div>
-          </div>
-
-          <div className="bg-slate-50 dark:bg-slate-950/60 p-4 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col justify-between">
-            <div>
-              <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2">
-                <Calendar className="w-4 h-4 text-blue-600" />
-                Miesiąc rozliczeniowy danych
-              </label>
-              <select
-                value={selectedMonth}
-                onChange={handleMonthChange}
-                className="w-full text-sm py-2 px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium focus:ring-2 focus:ring-blue-500 outline-none"
-              >
-                {monthOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label} ({opt.value})
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-                Wszystkie pozycje z tego importu zostaną oznaczone tym miesiącem.
-              </p>
-            </div>
-
-            <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
-              <span className="text-slate-500">W bazie danych:</span>
-              <span className="font-semibold text-slate-700 dark:text-slate-300">
-                {existingInvoices.length} faktur
-              </span>
-            </div>
-          </div>
+        {/* Input Area */}
+        <div className="mt-5">
+          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+            Pole wklejania z Excela (Tab-Separated / Tabela: Nr faktury | Prowadzący | Projekt | Netto | Waluta | Data Faktury)
+          </label>
+          <textarea
+            value={pasteText}
+            onChange={handlePasteChange}
+            placeholder="Wklej tutaj dane skopiowane z Excela jednym ruchem..."
+            rows={4}
+            className="w-full font-mono text-xs p-3.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition resize-y"
+          />
         </div>
       </div>
 
@@ -334,8 +273,7 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
                   <th className="py-3 px-4">Projekt</th>
                   <th className="py-3 px-4 text-right">Netto</th>
                   <th className="py-3 px-4 text-center">Waluta</th>
-                  <th className="py-3 px-4">Data Faktury</th>
-                  <th className="py-3 px-4 text-center">Miesiąc</th>
+                  <th className="py-3 px-4">Data wystawienia faktury</th>
                   <th className="py-3 px-4 text-center">Status</th>
                 </tr>
               </thead>
@@ -355,15 +293,14 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
                           : 'hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-800 dark:text-slate-200'
                       }`}
                     >
-                      {/* Checkbox to block/unblock */}
                       <td className="py-3 px-4 text-center">
                         <button
                           type="button"
                           onClick={() => toggleBlock(index)}
                           title={
                             item.isBlocked
-                              ? 'Kliknij, aby odblokować (zostanie przeniesiona do bazy)'
-                              : 'Kliknij, aby zablokować (podświetlenie na czerwono)'
+                              ? 'Kliknij, aby odblokować'
+                              : 'Kliknij, aby zablokować (czerwone podświetlenie)'
                           }
                           className={`w-8 h-8 rounded-lg flex items-center justify-center transition ${
                             item.isBlocked
@@ -379,7 +316,6 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
                         </button>
                       </td>
 
-                      {/* Nr faktury */}
                       <td className="py-3 px-4 font-mono font-medium text-xs">
                         <span className="flex items-center gap-1.5">
                           {item.nrFaktury}
@@ -394,7 +330,6 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
                         </span>
                       </td>
 
-                      {/* Prowadzący with distinctive color badge */}
                       <td className="py-3 px-4">
                         <span
                           className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${personColor.bg} ${personColor.text} ${personColor.border}`}
@@ -404,17 +339,14 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
                         </span>
                       </td>
 
-                      {/* Projekt */}
                       <td className="py-3 px-4 font-medium text-slate-700 dark:text-slate-300">
                         {item.projekt}
                       </td>
 
-                      {/* Netto */}
                       <td className="py-3 px-4 text-right font-mono font-semibold">
                         {formatCurrency(item.netto, item.waluta)}
                       </td>
 
-                      {/* Waluta */}
                       <td className="py-3 px-4 text-center">
                         <span
                           className={`px-2 py-0.5 rounded text-xs font-bold ${
@@ -427,19 +359,10 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
                         </span>
                       </td>
 
-                      {/* Data Faktury */}
-                      <td className="py-3 px-4 text-slate-600 dark:text-slate-400 text-xs">
+                      <td className="py-3 px-4 text-slate-700 dark:text-slate-300 text-xs font-mono">
                         {item.dataFaktury}
                       </td>
 
-                      {/* Miesiąc */}
-                      <td className="py-3 px-4 text-center">
-                        <span className="px-2 py-0.5 rounded text-xs bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono">
-                          {item.miesiacRozliczeniowy}
-                        </span>
-                      </td>
-
-                      {/* Status indicator */}
                       <td className="py-3 px-4 text-center">
                         {item.isBlocked ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-200 text-red-800 dark:bg-red-900/60 dark:text-red-200">
@@ -459,45 +382,6 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
           </div>
         </div>
       )}
-
-      {/* Workflow Information */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-slate-500 dark:text-slate-400">
-        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-start gap-3">
-          <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold shrink-0">
-            1
-          </div>
-          <div>
-            <span className="font-semibold text-slate-800 dark:text-slate-200 block mb-0.5">
-              Wklejanie jednym ruchem
-            </span>
-            Wklejasz kolumny: Nr faktury, Prowadzący, Projekt, Netto, Waluta, Data. Aplikacja automatycznie czyta przecinki dziesiętne i waluty.
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-start gap-3">
-          <div className="w-6 h-6 rounded-full bg-red-100 text-red-700 flex items-center justify-center font-bold shrink-0">
-            2
-          </div>
-          <div>
-            <span className="font-semibold text-slate-800 dark:text-slate-200 block mb-0.5">
-              Blokowanie faktur
-            </span>
-            Kliknij kłódkę na wierszu, aby zablokować pozycję (kolor czerwony). Zablokowane pozycje nie przechodzą do bazy i rozliczeń.
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-start gap-3">
-          <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold shrink-0">
-            3
-          </div>
-          <div>
-            <span className="font-semibold text-slate-800 dark:text-slate-200 block mb-0.5">
-              Deduplikacja
-            </span>
-            Przed dodaniem do bazy weryfikowane są numery faktur. Istniejące pozycje nie zostaną zdublowane.
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

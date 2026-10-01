@@ -14,16 +14,16 @@ describe('Excel Parser Tests', () => {
 
   it('parses raw user pasted tab-delimited Excel data with headers', () => {
     const rawData = `Nr faktury\tProwadzący\tProjekt\tNetto\tWaluta\tData Faktury
-FW 2/26/042\tWojciech Kozioł\tP/757/31\t5165,1\tEUR\t20.06.2026
-FW 2/26/043\tWojciech Robak\tP/979/12\t21582,81\tPLN\t25.06.2026
-FW 2/26/044\tMateusz Hluzow\tP/1073/24\t190657,36\tEUR\t29.06.2026
-FW 2/26/045\tWojciech Kozioł\tP/979/14\t3320,88\tPLN\t30.06.2026`;
+FW 2/26/042\tJan Kowalski\tP/757/31\t5165,1\tEUR\t20.06.2026
+FW 2/26/043\tAdam Nowak\tP/979/12\t21582,81\tPLN\t25.06.2026
+FW 2/26/044\tJan Kowalski\tP/1073/24\t190657,36\tEUR\t29.06.2026
+FW 2/26/045\tAdam Nowak\tP/979/14\t3320,88\tPLN\t30.06.2026`;
 
-    const parsed = parseExcelPaste(rawData, '2026-06');
+    const parsed = parseExcelPaste(rawData);
     expect(parsed.skippedHeaders).toBe(true);
     expect(parsed.invoices.length).toBe(4);
     expect(parsed.invoices[0].nrFaktury).toBe('FW 2/26/042');
-    expect(parsed.invoices[0].prowadzacy).toBe('Wojciech Kozioł');
+    expect(parsed.invoices[0].prowadzacy).toBe('Jan Kowalski');
     expect(parsed.invoices[0].waluta).toBe('EUR');
     expect(parsed.invoices[0].netto).toBe(5165.1);
     expect(parsed.invoices[1].waluta).toBe('PLN');
@@ -37,12 +37,13 @@ describe('Database Deduplication & Import Tests', () => {
       {
         id: 'exist-1',
         nrFaktury: 'FW 2/26/042',
-        prowadzacy: 'Wojciech Kozioł',
+        prowadzacy: 'Jan Kowalski',
         projekt: 'P/757/31',
         netto: 5165.1,
         waluta: 'EUR',
         dataFaktury: '2026-06-20',
         miesiacRozliczeniowy: '2026-06',
+        status: 'ROZLICZONA',
         isBlocked: false,
         kwotaPln: 22276.04,
         dataDodania: new Date().toISOString(),
@@ -52,32 +53,29 @@ describe('Database Deduplication & Import Tests', () => {
     const rawInputs = [
       {
         nrFaktury: 'FW 2/26/042', // Duplicate!
-        prowadzacy: 'Wojciech Kozioł',
+        prowadzacy: 'Jan Kowalski',
         projekt: 'P/757/31',
         netto: 5165.1,
         waluta: 'EUR' as const,
         dataFaktury: '2026-06-20',
-        miesiacRozliczeniowy: '2026-06',
         isBlocked: false,
       },
       {
         nrFaktury: 'FW 2/26/043', // Valid new
-        prowadzacy: 'Wojciech Robak',
+        prowadzacy: 'Adam Nowak',
         projekt: 'P/979/12',
         netto: 21582.81,
         waluta: 'PLN' as const,
         dataFaktury: '2026-06-25',
-        miesiacRozliczeniowy: '2026-06',
         isBlocked: false,
       },
       {
         nrFaktury: 'FW 2/26/044', // Blocked
-        prowadzacy: 'Mateusz Hluzow',
+        prowadzacy: 'Adam Nowak',
         projekt: 'P/1073/24',
         netto: 190657.36,
         waluta: 'EUR' as const,
         dataFaktury: '2026-06-29',
-        miesiacRozliczeniowy: '2026-06',
         isBlocked: true,
       },
     ];
@@ -87,6 +85,7 @@ describe('Database Deduplication & Import Tests', () => {
     expect(result.duplicateCount).toBe(1);
     expect(result.skippedBlockedCount).toBe(1);
     expect(result.updatedList.length).toBe(2);
+    expect(result.updatedList[1].status).toBe('WOLNA');
   });
 });
 

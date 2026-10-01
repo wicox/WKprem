@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { StoredInvoice } from '../types/bonus';
-import { formatCurrency, formatMonthName, formatRate } from '../utils/colors';
+import { StoredInvoice, AppSettings } from '../types/bonus';
+import { formatCurrency, formatMonthName } from '../utils/colors';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
@@ -11,60 +11,44 @@ import {
   Image as ImageIcon,
   Download,
   Calendar,
-  User,
   Layers,
 } from 'lucide-react';
 
 interface ProjectAllocationViewProps {
   invoices: StoredInvoice[];
-  selectedPerson: string;
-  onSelectPerson: (person: string) => void;
+  settings: AppSettings;
   selectedMonth: string;
   onSelectMonth: (month: string) => void;
-  useEndOfMonthRate: boolean;
 }
 
 export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
   invoices,
-  selectedPerson,
-  onSelectPerson,
+  settings,
   selectedMonth,
   onSelectMonth,
-  useEndOfMonthRate,
 }) => {
   const printRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [viewMode, setViewMode] = useState<'itemized' | 'aggregated'>('itemized');
 
-  // Available unique people and months
-  const availablePersons = useMemo(() => {
-    const set = new Set<string>();
-    invoices.forEach((i) => {
-      if (i.prowadzacy) set.add(i.prowadzacy);
-    });
-    return Array.from(set).sort();
-  }, [invoices]);
+  const currentMonth = selectedMonth || settings.activeMonth || '2026-07';
 
   const availableMonths = useMemo(() => {
-    const set = new Set<string>();
+    const list = [...(settings.customMonths || [])];
     invoices.forEach((i) => {
-      if (i.miesiacRozliczeniowy) set.add(i.miesiacRozliczeniowy);
+      if (i.miesiacRozliczeniowy && !list.includes(i.miesiacRozliczeniowy)) {
+        list.push(i.miesiacRozliczeniowy);
+      }
     });
-    return Array.from(set).sort().reverse();
-  }, [invoices]);
+    return Array.from(new Set(list)).sort().reverse();
+  }, [invoices, settings.customMonths]);
 
-  const currentPerson = selectedPerson || availablePersons[0] || 'Wojciech Kozioł';
-  const currentMonth = selectedMonth || availableMonths[0] || '2026-07';
-
-  // Filter invoices for this settlement
+  // All eligible invoices in this month
   const eligibleInvoices = useMemo(() => {
     return invoices.filter(
-      (inv) =>
-        inv.prowadzacy === currentPerson &&
-        inv.miesiacRozliczeniowy === currentMonth &&
-        !inv.isBlocked
+      (inv) => inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked
     );
-  }, [invoices, currentPerson, currentMonth]);
+  }, [invoices, currentMonth]);
 
   // Determine rate
   const activeRate = useMemo(() => {
@@ -72,10 +56,25 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     return eurInv?.kursEurPln || 4.3128;
   }, [eligibleInvoices]);
 
+  // Grand total converted PLN and exact 1% bonus to guarantee 1-to-1 match with Karta Premii
+  const { exactBonus1Percent } = useMemo(() => {
+    let totalPln = 0;
+    eligibleInvoices.forEach((inv) => {
+      if (inv.waluta === 'EUR') {
+        const rate = settings.useEndOfMonthRate ? activeRate : (inv.kursEurPln || activeRate);
+        totalPln += inv.netto * rate;
+      } else {
+        totalPln += inv.netto;
+      }
+    });
+    const exact = Math.round(totalPln * 0.01 * 100) / 100;
+    return { exactBonus1Percent: exact };
+  }, [eligibleInvoices, activeRate, settings.useEndOfMonthRate]);
+
   // Itemized rows (1-to-1 match with 02.jpg)
   const itemizedRows = useMemo(() => {
-    return eligibleInvoices.map((inv, idx) => {
-      const rate = inv.waluta === 'EUR' ? (useEndOfMonthRate ? activeRate : (inv.kursEurPln || activeRate)) : 1.0;
+    const rows = eligibleInvoices.map((inv, idx) => {
+      const rate = inv.waluta === 'EUR' ? (settings.useEndOfMonthRate ? activeRate : (inv.kursEurPln || activeRate)) : 1.0;
       const kwotaPln = inv.waluta === 'EUR' ? inv.netto * rate : inv.netto;
       const chargePln = Math.round(kwotaPln * 0.01 * 100) / 100;
 
@@ -88,7 +87,19 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
         chargePln,
       };
     });
-  }, [eligibleInvoices, activeRate, useEndOfMonthRate]);
+
+    // Check sum of individual rounded rows vs exact total bonus to reconcile 1-grosz rounding differences
+    if (rows.length > 0) {
+      const sumOfRounded = rows.reduce((acc, r) => acc + r.chargePln, 0);
+      const diff = Math.round((exactBonus1Percent - sumOfRounded) * 100) / 100;
+      if (Math.abs(diff) > 0 && Math.abs(diff) < 0.1) {
+        // Adjust the last row by the 1-2 grosz rounding remainder
+        rows[rows.length - 1].chargePln = Math.round((rows[rows.length - 1].chargePln + diff) * 100) / 100;
+      }
+    }
+
+    return rows;
+  }, [eligibleInvoices, activeRate, settings.useEndOfMonthRate, exactBonus1Percent]);
 
   // Aggregated by project
   const aggregatedRows = useMemo(() => {
@@ -98,7 +109,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     >();
 
     eligibleInvoices.forEach((inv) => {
-      const rate = inv.waluta === 'EUR' ? (useEndOfMonthRate ? activeRate : (inv.kursEurPln || activeRate)) : 1.0;
+      const rate = inv.waluta === 'EUR' ? (settings.useEndOfMonthRate ? activeRate : (inv.kursEurPln || activeRate)) : 1.0;
       const kwotaPln = inv.waluta === 'EUR' ? inv.netto * rate : inv.netto;
       const charge = Math.round(kwotaPln * 0.01 * 100) / 100;
 
@@ -110,7 +121,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
       map.set(inv.projekt, cur);
     });
 
-    return Array.from(map.entries()).map(([projekt, data], idx) => ({
+    const rows = Array.from(map.entries()).map(([projekt, data], idx) => ({
       lp: idx + 1,
       projekt,
       kwotaEur: data.kwotaEur,
@@ -118,13 +129,17 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
       chargePln: Math.round(data.chargePln * 100) / 100,
       count: data.count,
     }));
-  }, [eligibleInvoices, activeRate, useEndOfMonthRate]);
 
-  // Total charge
-  const totalChargePln = useMemo(() => {
-    const sum = itemizedRows.reduce((acc, row) => acc + row.chargePln, 0);
-    return Math.round(sum * 100) / 100;
-  }, [itemizedRows]);
+    if (rows.length > 0) {
+      const sumOfRounded = rows.reduce((acc, r) => acc + r.chargePln, 0);
+      const diff = Math.round((exactBonus1Percent - sumOfRounded) * 100) / 100;
+      if (Math.abs(diff) > 0 && Math.abs(diff) < 0.1) {
+        rows[rows.length - 1].chargePln = Math.round((rows[rows.length - 1].chargePln + diff) * 100) / 100;
+      }
+    }
+
+    return rows;
+  }, [eligibleInvoices, activeRate, settings.useEndOfMonthRate, exactBonus1Percent]);
 
   const monthLabel = formatMonthName(currentMonth);
 
@@ -132,7 +147,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
   const handleExportExcel = () => {
     const wb = XLSX.utils.book_new();
     const rows: (string | number)[][] = [
-      [`Premia ${currentPerson} - ${monthLabel}`],
+      [`Premia ${settings.beneficiaryName} - ${monthLabel}`],
       ['Premia - kwoty z podziałem na projekty.'],
       [],
       ['Lp.', 'Projekt', 'Kwota EUR - Projekt-Serwis', 'Kwota obciążenia - Projekt-Serwis'],
@@ -148,11 +163,11 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     });
 
     rows.push([]);
-    rows.push(['', '', 'SUMA OBCIĄŻEŃ:', `${totalChargePln.toFixed(2)} zł`]);
+    rows.push(['', '', 'SUMA OBCIĄŻEŃ:', `${exactBonus1Percent.toFixed(2)} zł`]);
 
     const ws = XLSX.utils.aoa_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws, 'Obciążenie Projektów');
-    XLSX.writeFile(wb, `Obciazenie_Projektow_${currentPerson.replace(/\s+/g, '_')}_${currentMonth}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, ws, 'Podział na Projekty');
+    XLSX.writeFile(wb, `Obciazenie_Projektow_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.xlsx`);
   };
 
   // Export to PDF
@@ -172,7 +187,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
       const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
 
       pdf.addImage(imgData, 'PNG', 0, 10, pdfWidth, pdfHeight);
-      pdf.save(`Obciazenie_Projektow_${currentPerson.replace(/\s+/g, '_')}_${currentMonth}.pdf`);
+      pdf.save(`Obciazenie_Projektow_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.pdf`);
     } catch (err) {
       console.error('PDF export failed', err);
     } finally {
@@ -192,7 +207,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
         backgroundColor: '#ffffff',
       });
       const link = document.createElement('a');
-      link.download = `Obciazenie_Projektow_${currentPerson.replace(/\s+/g, '_')}_${currentMonth}.jpg`;
+      link.download = `Obciazenie_Projektow_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.jpg`;
       link.href = canvas.toDataURL('image/jpeg', 0.95);
       link.click();
     } catch (err) {
@@ -213,10 +228,10 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
               Krok 4: Podział obciążenia na projekty (Wzór 02.jpg)
             </div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
-              Obciążenie Projektów 1%
+              Obciążenie Projektów 1%: {settings.beneficiaryName}
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Kalkulacja kwoty obciążenia Projekt-Serwis dla każdego projektu z osobna. Łączna suma obciążeń odpowiada 1% premii.
+              Kalkulacja kwoty obciążenia Projekt-Serwis dla każdego projektu. Suma końcowa zgadza się 1-do-1 co do grosza z kwotą 1% Premii Brutto.
             </p>
           </div>
 
@@ -256,25 +271,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
         </div>
 
         {/* Filters */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
-          <div>
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-              <User className="w-3.5 h-3.5 text-purple-600" />
-              Prowadzący
-            </label>
-            <select
-              value={currentPerson}
-              onChange={(e) => onSelectPerson(e.target.value)}
-              className="w-full text-sm py-2 px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none focus:ring-2 focus:ring-purple-500"
-            >
-              {availablePersons.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </div>
-
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
           <div>
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
               <Calendar className="w-3.5 h-3.5 text-purple-600" />
@@ -326,7 +323,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
         </div>
       </div>
 
-      {/* Exact Sheet 02.jpg Printable Container */}
+      {/* Exact Sheet 02.jpg Container */}
       <div className="flex justify-center">
         <div
           ref={printRef}
@@ -336,7 +333,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
           {/* Header matching 02.jpg */}
           <div className="text-center mb-6">
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 mb-1">
-              Premia {currentPerson} - {monthLabel}
+              Premia {settings.beneficiaryName} - {monthLabel}
             </h2>
             <h3 className="text-sm sm:text-base font-bold text-slate-900">
               Premia - kwoty z podziałem na projekty.
@@ -417,7 +414,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
                 <tr>
                   <td colSpan={3} className="border-t-2 border-black"></td>
                   <td className="border-2 border-black py-2.5 px-6 text-right font-mono font-extrabold text-sm sm:text-base bg-slate-100">
-                    {formatCurrency(totalChargePln, 'PLN')}
+                    {formatCurrency(exactBonus1Percent, 'PLN')}
                   </td>
                 </tr>
               </tfoot>

@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { StoredInvoice } from '../types/bonus';
+import { StoredInvoice, AppSettings } from '../types/bonus';
 import { formatCurrency, formatMonthName, formatRate } from '../utils/colors';
 import { exportSettlementToExcel } from '../services/excelService';
-import { saveStoredInvoices } from '../services/storageService';
+import { saveStoredInvoices, saveAppSettings } from '../services/storageService';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import {
@@ -12,72 +12,63 @@ import {
   Image as ImageIcon,
   CheckCircle,
   Calendar,
-  User,
-  ExternalLink,
-  Info,
-  DollarSign,
   Download,
+  Edit2,
+  Check,
+  RotateCcw,
+  AlertCircle,
+  PlusCircle,
 } from 'lucide-react';
 
 interface BonusSettlementViewProps {
   invoices: StoredInvoice[];
   onInvoicesChange: (updated: StoredInvoice[]) => void;
-  selectedPerson: string;
-  onSelectPerson: (person: string) => void;
+  settings: AppSettings;
+  onSettingsChange: (settings: AppSettings) => void;
   selectedMonth: string;
   onSelectMonth: (month: string) => void;
-  useEndOfMonthRate: boolean;
-  onToggleEndOfMonthRate: (val: boolean) => void;
 }
 
 export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
   invoices,
   onInvoicesChange,
-  selectedPerson,
-  onSelectPerson,
+  settings,
+  onSettingsChange,
   selectedMonth,
   onSelectMonth,
-  useEndOfMonthRate,
-  onToggleEndOfMonthRate,
 }) => {
   const printRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
 
-  // Available unique people and months
-  const availablePersons = useMemo(() => {
-    const set = new Set<string>();
-    invoices.forEach((i) => {
-      if (i.prowadzacy) set.add(i.prowadzacy);
-    });
-    return Array.from(set).sort();
-  }, [invoices]);
+  // Editable Beneficiary Name state
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState(settings.beneficiaryName || 'Jan Kowalski');
+
+  const currentMonth = selectedMonth || settings.activeMonth || '2026-07';
 
   const availableMonths = useMemo(() => {
-    const set = new Set<string>();
+    const list = [...(settings.customMonths || [])];
     invoices.forEach((i) => {
-      if (i.miesiacRozliczeniowy) set.add(i.miesiacRozliczeniowy);
+      if (i.miesiacRozliczeniowy && !list.includes(i.miesiacRozliczeniowy)) {
+        list.push(i.miesiacRozliczeniowy);
+      }
     });
-    return Array.from(set).sort().reverse();
-  }, [invoices]);
+    return Array.from(new Set(list)).sort().reverse();
+  }, [invoices, settings.customMonths]);
 
-  // Set default person and month if not set
-  const currentPerson = selectedPerson || availablePersons[0] || 'Wojciech Kozioł';
-  const currentMonth = selectedMonth || availableMonths[0] || '2026-07';
-
-  // Filter invoices for this settlement
+  // All unblocked invoices assigned to this settlement month (regardless of manager)
   const eligibleInvoices = useMemo(() => {
     return invoices.filter(
-      (inv) =>
-        inv.prowadzacy === currentPerson &&
-        inv.miesiacRozliczeniowy === currentMonth &&
-        !inv.isBlocked
+      (inv) => inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked
     );
-  }, [invoices, currentPerson, currentMonth]);
+  }, [invoices, currentMonth]);
 
-  // Determine active rate for the month
+  // Check settlement status of this month's invoices
+  const allSettled = eligibleInvoices.length > 0 && eligibleInvoices.every((i) => i.status === 'ROZLICZONA');
+
+  // Active rate for month
   const activeMonthRate = useMemo(() => {
-    // If end of month, pick the representative rate from the invoices or default 4.3128
     const eurInv = eligibleInvoices.find((i) => i.waluta === 'EUR' && i.kursEurPln);
     if (eurInv && eurInv.kursEurPln) {
       return {
@@ -93,7 +84,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     };
   }, [eligibleInvoices, currentMonth]);
 
-  // Calculations
+  // Bonus Calculations
   const calculations = useMemo(() => {
     let sumEur = 0;
     let sumPln = 0;
@@ -102,7 +93,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     eligibleInvoices.forEach((inv) => {
       if (inv.waluta === 'EUR') {
         sumEur += inv.netto;
-        if (useEndOfMonthRate) {
+        if (settings.useEndOfMonthRate) {
           totalConvertedPln += inv.netto * activeMonthRate.rate;
         } else {
           totalConvertedPln += inv.kwotaPln;
@@ -124,20 +115,25 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
       totalConvertedPln,
       bonus1Percent,
     };
-  }, [eligibleInvoices, useEndOfMonthRate, activeMonthRate]);
+  }, [eligibleInvoices, settings.useEndOfMonthRate, activeMonthRate]);
 
-  // Mark these invoices as settled
+  // Save new beneficiary name
+  const handleSaveName = () => {
+    const trimmed = nameInput.trim() || 'Jan Kowalski';
+    const updated = { ...settings, beneficiaryName: trimmed };
+    onSettingsChange(updated);
+    saveAppSettings(updated);
+    setIsEditingName(false);
+  };
+
+  // Mark all invoices in this month as ROZLICZONA
   const handleMarkAsSettled = () => {
-    const settlementId = `${currentPerson}_${currentMonth}`;
     const updated = invoices.map((inv) => {
-      if (
-        inv.prowadzacy === currentPerson &&
-        inv.miesiacRozliczeniowy === currentMonth &&
-        !inv.isBlocked
-      ) {
+      if (inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked) {
         return {
           ...inv,
-          rozliczonaWId: settlementId,
+          status: 'ROZLICZONA' as const,
+          rozliczonaWId: currentMonth,
         };
       }
       return inv;
@@ -146,7 +142,28 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     onInvoicesChange(updated);
     saveStoredInvoices(updated);
     setNotification(
-      `Faktury (${eligibleInvoices.length} szt.) zostały pomyślnie oznaczone jako rozliczone w karcie: ${settlementId}!`
+      `Faktury z miesiąca ${formatMonthName(currentMonth)} (${eligibleInvoices.length} szt.) zostały zatwierdzone jako ROZLICZONE w bazie!`
+    );
+    setTimeout(() => setNotification(null), 5000);
+  };
+
+  // Revert / unmark as settled to allow editing
+  const handleRevertToReserved = () => {
+    const updated = invoices.map((inv) => {
+      if (inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked) {
+        return {
+          ...inv,
+          status: 'ZAREZERWOWANA' as const,
+          rozliczonaWId: undefined,
+        };
+      }
+      return inv;
+    });
+
+    onInvoicesChange(updated);
+    saveStoredInvoices(updated);
+    setNotification(
+      `Cofnięto status faktur do ZAREZERWOWANA. Możesz teraz dodawać, modyfikować lub usuwać faktury z tego miesiąca w Bazie Danych.`
     );
     setTimeout(() => setNotification(null), 5000);
   };
@@ -156,8 +173,8 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     const monthFormatted = formatMonthName(currentMonth);
     const tableText = `Tabela nr ${activeMonthRate.tableNo} z dnia ${activeMonthRate.date}`;
     exportSettlementToExcel(
-      `Premia ${currentPerson} - ${monthFormatted}`,
-      currentPerson,
+      `Premia ${settings.beneficiaryName} - ${monthFormatted}`,
+      settings.beneficiaryName,
       monthFormatted,
       eligibleInvoices,
       calculations.sumEur,
@@ -166,7 +183,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
       calculations.totalConvertedPln,
       calculations.bonus1Percent,
       tableText,
-      useEndOfMonthRate
+      settings.useEndOfMonthRate
     );
   };
 
@@ -187,7 +204,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
       const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
 
       pdf.addImage(imgData, 'PNG', 0, 10, pdfWidth, pdfHeight);
-      pdf.save(`Premia_${currentPerson.replace(/\s+/g, '_')}_${currentMonth}.pdf`);
+      pdf.save(`Premia_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.pdf`);
     } catch (err) {
       console.error('PDF export failed', err);
     } finally {
@@ -207,7 +224,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
         backgroundColor: '#ffffff',
       });
       const link = document.createElement('a');
-      link.download = `Premia_${currentPerson.replace(/\s+/g, '_')}_${currentMonth}.jpg`;
+      link.download = `Premia_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.jpg`;
       link.href = canvas.toDataURL('image/jpeg', 0.95);
       link.click();
     } catch (err) {
@@ -217,16 +234,11 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     }
   };
 
-  // Direct Window Print
-  const handlePrint = () => {
-    window.print();
-  };
-
   const monthLabel = formatMonthName(currentMonth);
 
   return (
     <div className="space-y-6">
-      {/* Control Toolbar (Hidden on print) */}
+      {/* Control Toolbar */}
       <div className="print:hidden bg-white dark:bg-slate-900 rounded-xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
@@ -234,20 +246,54 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               <FileText className="w-3.5 h-3.5" />
               Krok 3: Karta rozliczenia premii (Wzór 01.jpg)
             </div>
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
-              Karta Premii: {currentPerson}
-            </h1>
+
+            {/* Editable Beneficiary Name */}
+            <div className="flex items-center gap-2">
+              {isEditingName ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    className="text-xl font-bold p-1 rounded border border-blue-400 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleSaveName}
+                    className="p-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold"
+                    title="Zapisz nazwisko"
+                  >
+                    <Check className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 group">
+                  <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
+                    Premia: {settings.beneficiaryName}
+                  </h1>
+                  <button
+                    onClick={() => {
+                      setNameInput(settings.beneficiaryName);
+                      setIsEditingName(true);
+                    }}
+                    className="p-1 text-slate-400 hover:text-blue-600 transition"
+                    title="Kliknij, aby zmienić Imię i Nazwisko osoby premiowanej"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+            </div>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Podsumowanie faktur z wyliczeniem 1% premii brutto, kursem EUR z NBP oraz formatem wydruku identycznym z wzorcem 01.jpg.
+              Rozliczenie premii dla wskazanego miesiąca. Wszystkie przypisane faktury tworzą jeden wspólny worek rozliczeniowy.
             </p>
           </div>
 
           {/* Action Export Buttons */}
           <div className="flex flex-wrap items-center gap-2">
             <button
-              onClick={handlePrint}
+              onClick={() => window.print()}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition"
-              title="Drukuj bezpośrednio na drukarce lub do pliku"
             >
               <Printer className="w-3.5 h-3.5" />
               Drukuj
@@ -278,30 +324,12 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
           </div>
         </div>
 
-        {/* Filters and Rate Toggle */}
+        {/* Month Selector and Rate Setting */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
           <div>
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
-              <User className="w-3.5 h-3.5 text-blue-600" />
-              Wybierz Prowadzącego
-            </label>
-            <select
-              value={currentPerson}
-              onChange={(e) => onSelectPerson(e.target.value)}
-              className="w-full text-sm py-2 px-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {availablePersons.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
               <Calendar className="w-3.5 h-3.5 text-blue-600" />
-              Miesiąc Rozliczeniowy
+              Wybierz Miesiąc Rozliczeniowy
             </label>
             <select
               value={currentMonth}
@@ -320,8 +348,12 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
             <label className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 cursor-pointer select-none">
               <input
                 type="checkbox"
-                checked={useEndOfMonthRate}
-                onChange={(e) => onToggleEndOfMonthRate(e.target.checked)}
+                checked={settings.useEndOfMonthRate}
+                onChange={(e) => {
+                  const updated = { ...settings, useEndOfMonthRate: e.target.checked };
+                  onSettingsChange(updated);
+                  saveAppSettings(updated);
+                }}
                 className="w-4 h-4 text-blue-600 rounded"
               />
               <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
@@ -329,20 +361,29 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               </span>
             </label>
           </div>
-        </div>
 
-        {/* Settlement status action */}
-        <div className="mt-4 flex items-center justify-between pt-4 border-t border-slate-100 dark:border-slate-800 text-xs">
-          <span className="text-slate-500">
-            Faktur w tym rozliczeniu: <strong className="text-slate-800 dark:text-slate-200">{eligibleInvoices.length}</strong>
-          </span>
-          <button
-            onClick={handleMarkAsSettled}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-900 dark:bg-slate-100 hover:bg-slate-800 text-white dark:text-slate-900 font-semibold transition"
-          >
-            <CheckCircle className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-600" />
-            Oznacz faktury jako rozliczone w bazie
-          </button>
+          {/* Settlement Status and Revert / Settle buttons */}
+          <div className="flex items-end gap-2">
+            {!allSettled ? (
+              <button
+                onClick={handleMarkAsSettled}
+                disabled={eligibleInvoices.length === 0}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition disabled:opacity-50"
+              >
+                <CheckCircle className="w-4 h-4" />
+                Zatwierdź jako ROZLICZONE w bazie
+              </button>
+            ) : (
+              <button
+                onClick={handleRevertToReserved}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-xs transition"
+                title="Cofnij do statusu Zarezerwowana, aby dokonać zmian w bazie danych"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Odznacz (Cofnij do Zarezerwowana)
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -363,7 +404,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
           {/* Header centered matching 01.jpg */}
           <div className="text-center mb-6">
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-              Premia {currentPerson} - {monthLabel}
+              Premia {settings.beneficiaryName} - {monthLabel}
             </h2>
           </div>
 
@@ -387,8 +428,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                   <th className="border border-black py-2 px-4 text-center font-bold">
                     Kwota
                   </th>
-                  {/* Show rate column if individual daily rate is active (as requested by user) */}
-                  {!useEndOfMonthRate && (
+                  {!settings.useEndOfMonthRate && (
                     <th className="border border-black py-2 px-3 text-center font-bold text-xs">
                       Kurs NBP
                     </th>
@@ -399,10 +439,10 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                 {eligibleInvoices.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={useEndOfMonthRate ? 5 : 6}
+                      colSpan={settings.useEndOfMonthRate ? 5 : 6}
                       className="border border-black py-8 text-center text-slate-500 italic"
                     >
-                      Brak odblokowanych faktur dla prowadzącego {currentPerson} w miesiącu {monthLabel}.
+                      Brak przypisanych faktur do miesiąca {monthLabel}. Przypisz faktury w zakładce Baza Danych.
                     </td>
                   </tr>
                 ) : (
@@ -423,7 +463,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                       <td className="border border-black py-1.5 px-4 text-right font-mono font-medium">
                         {formatCurrency(inv.netto, inv.waluta)}
                       </td>
-                      {!useEndOfMonthRate && (
+                      {!settings.useEndOfMonthRate && (
                         <td className="border border-black py-1.5 px-3 text-center font-mono text-[11px]">
                           {inv.waluta === 'EUR' ? formatRate(inv.kursEurPln || activeMonthRate.rate) : '-'}
                         </td>
@@ -432,13 +472,13 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                   ))
                 )}
 
-                {/* Subtotal row inside table matching 01.jpg */}
+                {/* Subtotal row */}
                 <tr className="border-t-2 border-black font-bold">
                   <td colSpan={4} className="py-2.5 px-3 text-right"></td>
                   <td className="border border-black py-2.5 px-4 text-right font-mono font-bold bg-slate-50 text-sm">
                     {formatCurrency(calculations.sumEur, 'EUR')}
                   </td>
-                  {!useEndOfMonthRate && <td className="border border-black"></td>}
+                  {!settings.useEndOfMonthRate && <td className="border border-black"></td>}
                 </tr>
               </tbody>
             </table>
@@ -496,7 +536,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
             </div>
           </div>
 
-          {/* Signature area at bottom */}
+          {/* Signature */}
           <div className="mt-16 pt-8 flex justify-end">
             <div className="text-right">
               <div className="text-xs text-slate-600 mb-1">Podpis</div>

@@ -31,6 +31,8 @@ export default function App() {
     useEndOfMonthRate: true,
     activeMonth: '2026-07',
     defaultBonusPercent: 1.0,
+    beneficiaryName: 'Jan Kowalski',
+    customMonths: ['2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10'],
   });
 
   const [selectedPerson, setSelectedPerson] = useState<string>('Wojciech Kozioł');
@@ -230,9 +232,12 @@ export default function App() {
           <DatabaseView
             invoices={invoices}
             onInvoicesChange={handleInvoicesChange}
-            useEndOfMonthRate={settings.useEndOfMonthRate}
-            onToggleEndOfMonthRate={handleToggleEndOfMonthRate}
-            onNavigateToSettlement={handleNavigateToSettlement}
+            settings={settings}
+            onSettingsChange={setSettings}
+            onNavigateToSettlement={(month) => {
+              setSelectedMonth(month);
+              setActiveTab('settlement');
+            }}
           />
         )}
 
@@ -240,23 +245,19 @@ export default function App() {
           <BonusSettlementView
             invoices={invoices}
             onInvoicesChange={handleInvoicesChange}
-            selectedPerson={selectedPerson}
-            onSelectPerson={setSelectedPerson}
+            settings={settings}
+            onSettingsChange={setSettings}
             selectedMonth={selectedMonth}
             onSelectMonth={setSelectedMonth}
-            useEndOfMonthRate={settings.useEndOfMonthRate}
-            onToggleEndOfMonthRate={handleToggleEndOfMonthRate}
           />
         )}
 
         {activeTab === 'projects' && (
           <ProjectAllocationView
             invoices={invoices}
-            selectedPerson={selectedPerson}
-            onSelectPerson={setSelectedPerson}
+            settings={settings}
             selectedMonth={selectedMonth}
             onSelectMonth={setSelectedMonth}
-            useEndOfMonthRate={settings.useEndOfMonthRate}
           />
         )}
 

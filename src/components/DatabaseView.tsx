@@ -1,67 +1,168 @@
 import React, { useState, useMemo } from 'react';
-import { StoredInvoice } from '../types/bonus';
+import { StoredInvoice, InvoiceStatus, AppSettings } from '../types/bonus';
 import { getPersonColor, formatCurrency, formatMonthName, formatRate } from '../utils/colors';
 import { getEurExchangeRateForDate, getEurRateForEndOfMonth } from '../services/nbpService';
-import { saveStoredInvoices } from '../services/storageService';
+import { saveStoredInvoices, saveAppSettings } from '../services/storageService';
 import {
   Database,
   Search,
-  Filter,
   RefreshCw,
   CheckCircle,
   Lock,
   Unlock,
   Calendar,
-  Layers,
-  ArrowRight,
-  TrendingUp,
   FileSpreadsheet,
-  AlertCircle,
-  Edit2,
   Trash2,
+  Plus,
+  Sparkles,
+  CheckSquare,
+  Square,
+  ArrowRight,
+  Bookmark,
+  Layers,
+  HelpCircle,
+  Edit2,
+  X,
 } from 'lucide-react';
 
 interface DatabaseViewProps {
   invoices: StoredInvoice[];
   onInvoicesChange: (updated: StoredInvoice[]) => void;
-  useEndOfMonthRate: boolean;
-  onToggleEndOfMonthRate: (val: boolean) => void;
-  onNavigateToSettlement: (prowadzacy: string, month: string) => void;
+  settings: AppSettings;
+  onSettingsChange: (settings: AppSettings) => void;
+  onNavigateToSettlement: (month: string) => void;
 }
 
 export const DatabaseView: React.FC<DatabaseViewProps> = ({
   invoices,
   onInvoicesChange,
-  useEndOfMonthRate,
-  onToggleEndOfMonthRate,
+  settings,
+  onSettingsChange,
   onNavigateToSettlement,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterMonth, setFilterMonth] = useState<string>('all');
-  const [filterPerson, setFilterPerson] = useState<string>('all');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'unsettled' | 'settled' | 'blocked'>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isUpdatingRates, setIsUpdatingRates] = useState(false);
   const [editingRateId, setEditingRateId] = useState<string | null>(null);
   const [customRateInput, setCustomRateInput] = useState<string>('');
 
-  // Extract unique months and managers
+  // Auto-allocate algorithm state
+  const [targetAmountInput, setTargetAmountInput] = useState<string>('200000');
+  const [targetMonthSelect, setTargetMonthSelect] = useState<string>(settings.activeMonth || '2026-08');
+  const [isAutoAllocModalOpen, setIsAutoAllocModalOpen] = useState(false);
+
+  // New month creation state
+  const [isNewMonthModalOpen, setIsNewMonthModalOpen] = useState(false);
+  const [newMonthInput, setNewMonthInput] = useState<string>('2026-11');
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+
+  // Months available
   const availableMonths = useMemo(() => {
-    const set = new Set<string>();
+    const list = [...(settings.customMonths || [])];
     invoices.forEach((inv) => {
-      if (inv.miesiacRozliczeniowy) set.add(inv.miesiacRozliczeniowy);
+      if (inv.miesiacRozliczeniowy && !list.includes(inv.miesiacRozliczeniowy)) {
+        list.push(inv.miesiacRozliczeniowy);
+      }
     });
-    return Array.from(set).sort().reverse();
-  }, [invoices]);
+    return Array.from(new Set(list)).sort().reverse();
+  }, [invoices, settings.customMonths]);
 
-  const availablePersons = useMemo(() => {
-    const set = new Set<string>();
-    invoices.forEach((inv) => {
-      if (inv.prowadzacy) set.add(inv.prowadzacy);
+  // Handle adding a new month
+  const handleAddNewMonth = () => {
+    const trimmed = newMonthInput.trim();
+    if (!trimmed) return;
+    if (!availableMonths.includes(trimmed)) {
+      const updatedMonths = [...availableMonths, trimmed].sort().reverse();
+      const updatedSettings = { ...settings, customMonths: updatedMonths };
+      onSettingsChange(updatedSettings);
+      saveAppSettings(updatedSettings);
+      setTargetMonthSelect(trimmed);
+      setFeedbackMessage(`Dodano nowy miesiąc rozliczeniowy: ${formatMonthName(trimmed)} (${trimmed})`);
+      setTimeout(() => setFeedbackMessage(null), 4000);
+    }
+    setIsNewMonthModalOpen(false);
+  };
+
+  // Toggle single item selection
+  const toggleSelectRow = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
-    return Array.from(set).sort();
-  }, [invoices]);
+  };
 
-  // Toggle lock for a single invoice
+  // Select all or deselect all visible
+  const handleSelectAllVisible = (visibleIds: string[]) => {
+    setSelectedIds((prev) => {
+      const allSelected = visibleIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleIds.forEach((id) => next.delete(id));
+      } else {
+        visibleIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  // Batch delete selected
+  const handleBatchDelete = () => {
+    if (selectedIds.size === 0) return;
+    if (confirm(`Czy na pewno chcesz bezpowrotnie usunąć zaznaczone (${selectedIds.size}) faktury z bazy danych?`)) {
+      const updated = invoices.filter((i) => !selectedIds.has(i.id));
+      onInvoicesChange(updated);
+      saveStoredInvoices(updated);
+      setSelectedIds(new Set());
+      setFeedbackMessage(`Usunięto pomyślnie ${selectedIds.size} faktur.`);
+      setTimeout(() => setFeedbackMessage(null), 4000);
+    }
+  };
+
+  // Batch assign month
+  const handleBatchAssignMonth = (monthVal: string) => {
+    if (selectedIds.size === 0) return;
+    const updated = invoices.map((inv) => {
+      if (selectedIds.has(inv.id)) {
+        return {
+          ...inv,
+          miesiacRozliczeniowy: monthVal,
+          status: monthVal ? ('ZAREZERWOWANA' as InvoiceStatus) : ('WOLNA' as InvoiceStatus),
+        };
+      }
+      return inv;
+    });
+    onInvoicesChange(updated);
+    saveStoredInvoices(updated);
+    setSelectedIds(new Set());
+    setFeedbackMessage(
+      monthVal
+        ? `Przypisano ${selectedIds.size} faktur do miesiąca: ${formatMonthName(monthVal)} (status: ZAREZERWOWANA).`
+        : `Uwolniono ${selectedIds.size} faktur (status: WOLNA).`
+    );
+    setTimeout(() => setFeedbackMessage(null), 4000);
+  };
+
+  // Change single invoice month
+  const handleInvoiceMonthChange = (id: string, newMonth: string) => {
+    const updated = invoices.map((inv) => {
+      if (inv.id === id) {
+        return {
+          ...inv,
+          miesiacRozliczeniowy: newMonth,
+          status: newMonth ? ('ZAREZERWOWANA' as InvoiceStatus) : ('WOLNA' as InvoiceStatus),
+        };
+      }
+      return inv;
+    });
+    onInvoicesChange(updated);
+    saveStoredInvoices(updated);
+  };
+
+  // Toggle invoice lock
   const toggleInvoiceLock = (id: string) => {
     const updated = invoices.map((inv) => {
       if (inv.id === id) {
@@ -73,23 +174,60 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     saveStoredInvoices(updated);
   };
 
-  // Delete invoice
-  const deleteInvoice = (id: string) => {
-    if (confirm('Czy na pewno chcesz usunąć tę fakturę z bazy danych?')) {
-      const updated = invoices.filter((i) => i.id !== id);
-      onInvoicesChange(updated);
-      saveStoredInvoices(updated);
+  // Auto-allocation algorithm
+  const handleAutoAllocateInvoices = () => {
+    const target = parseFloat(targetAmountInput.replace(/\s+/g, '').replace(',', '.'));
+    if (isNaN(target) || target <= 0) {
+      alert('Wpisz poprawną kwotę docelową w PLN (np. 150000)');
+      return;
     }
+
+    // Find all unblocked, free (WOLNA) invoices
+    const freeInvoices = invoices.filter((i) => !i.isBlocked && (!i.miesiacRozliczeniowy || i.status === 'WOLNA'));
+    // Sort chronologically by invoice date
+    freeInvoices.sort((a, b) => a.dataFaktury.localeCompare(b.dataFaktury));
+
+    let accumulatedPln = 0;
+    const assignedIds = new Set<string>();
+
+    for (const inv of freeInvoices) {
+      if (accumulatedPln >= target) break;
+      assignedIds.add(inv.id);
+      accumulatedPln += inv.kwotaPln;
+    }
+
+    if (assignedIds.size === 0) {
+      alert('Brak wolnych (nierozliczonych) faktur w bazie danych do przydziału!');
+      return;
+    }
+
+    const updated = invoices.map((inv) => {
+      if (assignedIds.has(inv.id)) {
+        return {
+          ...inv,
+          miesiacRozliczeniowy: targetMonthSelect,
+          status: 'ZAREZERWOWANA' as InvoiceStatus,
+        };
+      }
+      return inv;
+    });
+
+    onInvoicesChange(updated);
+    saveStoredInvoices(updated);
+    setIsAutoAllocModalOpen(false);
+    setFeedbackMessage(
+      `Algorytm dobrał ${assignedIds.size} faktur o łącznej wartości ${formatCurrency(accumulatedPln, 'PLN')} do miesiąca ${formatMonthName(targetMonthSelect)}!`
+    );
+    setTimeout(() => setFeedbackMessage(null), 6000);
   };
 
   // Re-fetch exchange rates from NBP API
   const handleRefreshNbpRates = async () => {
     setIsUpdatingRates(true);
     try {
-      // If useEndOfMonthRate is active, fetch month-end rates per month
       const monthRates: Record<string, { rate: number; tableNo: string; date: string }> = {};
 
-      if (useEndOfMonthRate) {
+      if (settings.useEndOfMonthRate) {
         for (const m of availableMonths) {
           const res = await getEurRateForEndOfMonth(m);
           monthRates[m] = {
@@ -110,7 +248,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
             };
           }
 
-          if (useEndOfMonthRate && monthRates[inv.miesiacRozliczeniowy]) {
+          if (settings.useEndOfMonthRate && inv.miesiacRozliczeniowy && monthRates[inv.miesiacRozliczeniowy]) {
             const mRate = monthRates[inv.miesiacRozliczeniowy];
             const kwotaPln = Math.round(inv.netto * mRate.rate * 100) / 100;
             return {
@@ -122,7 +260,6 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
             };
           }
 
-          // Individual daily rate
           const rateRes = await getEurExchangeRateForDate(inv.dataFaktury);
           const kwotaPln = Math.round(inv.netto * rateRes.rate * 100) / 100;
           return {
@@ -137,6 +274,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
 
       onInvoicesChange(updated);
       saveStoredInvoices(updated);
+      setFeedbackMessage('Pobrano i zaktualizowano aktualne kursy EUR z Narodowego Banku Polskiego!');
+      setTimeout(() => setFeedbackMessage(null), 4000);
     } catch (err) {
       console.error('Error refreshing NBP rates:', err);
     } finally {
@@ -144,7 +283,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     }
   };
 
-  // Save custom rate for a row
+  // Save custom rate
   const handleSaveCustomRate = (id: string) => {
     const parsed = parseFloat(customRateInput.replace(',', '.'));
     if (!isNaN(parsed) && parsed > 0) {
@@ -166,27 +305,22 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     setEditingRateId(null);
   };
 
-  // Filtered invoices
+  // Filter logic
   const filteredInvoices = useMemo(() => {
     return invoices.filter((inv) => {
       // Month
-      if (filterMonth !== 'all' && inv.miesiacRozliczeniowy !== filterMonth) {
+      if (filterMonth === 'free') {
+        if (inv.miesiacRozliczeniowy && inv.status !== 'WOLNA') return false;
+      } else if (filterMonth !== 'all' && inv.miesiacRozliczeniowy !== filterMonth) {
         return false;
       }
-      // Person
-      if (filterPerson !== 'all' && inv.prowadzacy !== filterPerson) {
-        return false;
-      }
+
       // Status
-      if (filterStatus === 'unsettled' && (inv.rozliczonaWId || inv.isBlocked)) {
-        return false;
-      }
-      if (filterStatus === 'settled' && !inv.rozliczonaWId) {
-        return false;
-      }
-      if (filterStatus === 'blocked' && !inv.isBlocked) {
-        return false;
-      }
+      if (filterStatus === 'WOLNA' && inv.status !== 'WOLNA') return false;
+      if (filterStatus === 'ZAREZERWOWANA' && inv.status !== 'ZAREZERWOWANA') return false;
+      if (filterStatus === 'ROZLICZONA' && inv.status !== 'ROZLICZONA') return false;
+      if (filterStatus === 'BLOCKED' && !inv.isBlocked) return false;
+
       // Search
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
@@ -198,7 +332,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
       }
       return true;
     });
-  }, [invoices, filterMonth, filterPerson, filterStatus, searchTerm]);
+  }, [invoices, filterMonth, filterStatus, searchTerm]);
 
   // Aggregate stats
   const stats = useMemo(() => {
@@ -206,13 +340,17 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     let plnTotal = 0;
     let totalPlnConverted = 0;
     let settledCount = 0;
+    let reservedCount = 0;
+    let freeCount = 0;
     let blockedCount = 0;
 
     filteredInvoices.forEach((inv) => {
       if (inv.waluta === 'EUR') eurTotal += inv.netto;
       else plnTotal += inv.netto;
       totalPlnConverted += inv.kwotaPln;
-      if (inv.rozliczonaWId) settledCount++;
+      if (inv.status === 'ROZLICZONA') settledCount++;
+      else if (inv.status === 'ZAREZERWOWANA') reservedCount++;
+      else freeCount++;
       if (inv.isBlocked) blockedCount++;
     });
 
@@ -222,114 +360,146 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
       plnTotal,
       totalPlnConverted,
       settledCount,
+      reservedCount,
+      freeCount,
       blockedCount,
       estimatedBonus1Percent: Math.round(totalPlnConverted * 0.01 * 100) / 100,
     };
   }, [filteredInvoices]);
 
+  const visibleIds = filteredInvoices.map((i) => i.id);
+  const isAllVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+
   return (
     <div className="space-y-6">
-      {/* Header and Switchers */}
+      {/* Header and Controls */}
       <div className="bg-white dark:bg-slate-900 rounded-xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 mb-2">
               <Database className="w-3.5 h-3.5" />
-              Krok 2: Baza danych i historia
+              Krok 2: Baza danych i historia faktur
             </div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
-              Główna Baza Faktur i Kursów NBP
+              Baza Faktur i Zarządzanie Miesiącami
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
-              Centralne repozytorium faktur z deduplikacją numerów, automatycznym pobieraniem kursów EUR/PLN z Tabeli A NBP oraz statusem rozliczeń w premiach.
+              Faktury zachowują swoją datę wystawienia, a w kolumnie <strong>Miesiąc</strong> decydujesz, do której karty premii trafiają.
+              Statusy: <strong>Wolna</strong> (dostępna), <strong>Zarezerwowana</strong> (w roboczym miesiącu), <strong>Rozliczona</strong> (zatwierdzona).
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Create new month button */}
+            <button
+              onClick={() => setIsNewMonthModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition"
+              title="Dodaj nowy miesiąc rozliczeniowy do wyboru"
+            >
+              <Plus className="w-3.5 h-3.5 text-blue-600" />
+              Nowy miesiąc
+            </button>
+
+            {/* Auto-allocate algorithm button */}
+            <button
+              onClick={() => setIsAutoAllocModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition"
+              title="Automatycznie dobierz wolne faktury do zadanej kwoty PLN"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+              Dobierz faktury do kwoty
+            </button>
+
             {/* Checkbox: Kurs z ostatniego dnia miesiąca */}
-            <label className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/40 cursor-pointer select-none">
+            <label className="flex items-center gap-2 px-3 py-2 rounded-lg border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/40 cursor-pointer select-none">
               <input
                 type="checkbox"
-                checked={useEndOfMonthRate}
+                checked={settings.useEndOfMonthRate}
                 onChange={(e) => {
-                  onToggleEndOfMonthRate(e.target.checked);
-                  setTimeout(handleRefreshNbpRates, 100);
+                  const updated = { ...settings, useEndOfMonthRate: e.target.checked };
+                  onSettingsChange(updated);
+                  saveAppSettings(updated);
                 }}
                 className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
               />
-              <div className="text-xs">
-                <span className="font-bold text-indigo-950 dark:text-indigo-200 block">
-                  Kurs z ostatniego dnia miesiąca
-                </span>
-                <span className="text-[11px] text-indigo-700 dark:text-indigo-300">
-                  Przelicza cały miesiąc jednym kursem NBP
-                </span>
-              </div>
+              <span className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                Kurs z końca miesiąca
+              </span>
             </label>
 
             <button
               onClick={handleRefreshNbpRates}
               disabled={isUpdatingRates}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isUpdatingRates ? 'animate-spin' : ''}`} />
-              {isUpdatingRates ? 'Pobieranie z NBP...' : 'Aktualizuj kursy NBP'}
+              {isUpdatingRates ? 'Pobieranie...' : 'Aktualizuj NBP'}
             </button>
           </div>
         </div>
 
-        {/* Stats Strip */}
+        {/* Feedback message */}
+        {feedbackMessage && (
+          <div className="mt-4 p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg text-emerald-800 dark:text-emerald-200 text-xs font-semibold flex items-center justify-between">
+            <span>{feedbackMessage}</span>
+            <button onClick={() => setFeedbackMessage(null)} className="text-emerald-600 hover:text-emerald-800">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Stats bar */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
             <span className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 block">
-              Liczba pozycji
+              Widoczne pozycje
             </span>
             <span className="text-lg font-bold text-slate-900 dark:text-white">
               {stats.count}{' '}
               <span className="text-xs font-normal text-slate-500">
-                (z {invoices.length} łącznie)
+                (z {invoices.length})
               </span>
             </span>
           </div>
 
-          <div className="p-3 rounded-lg bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900">
-            <span className="text-[11px] uppercase tracking-wider font-semibold text-indigo-700 dark:text-indigo-400 block">
-              Suma Netto EUR
-            </span>
-            <span className="text-lg font-bold text-indigo-900 dark:text-indigo-200 font-mono">
-              {formatCurrency(stats.eurTotal, 'EUR')}
-            </span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900">
-            <span className="text-[11px] uppercase tracking-wider font-semibold text-emerald-700 dark:text-emerald-400 block">
-              Suma Netto PLN
-            </span>
-            <span className="text-lg font-bold text-emerald-900 dark:text-emerald-200 font-mono">
-              {formatCurrency(stats.plnTotal, 'PLN')}
-            </span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-blue-50/60 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900">
-            <span className="text-[11px] uppercase tracking-wider font-semibold text-blue-800 dark:text-blue-300 block">
-              Łącznie przeliczone na PLN
-            </span>
-            <span className="text-lg font-bold text-blue-900 dark:text-blue-200 font-mono">
-              {formatCurrency(stats.totalPlnConverted, 'PLN')}
-            </span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-amber-50/70 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900">
-            <span className="text-[11px] uppercase tracking-wider font-semibold text-amber-800 dark:text-amber-300 block">
-              Szacowana premia 1%
+          <div className="p-3 rounded-lg bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900">
+            <span className="text-[11px] uppercase tracking-wider font-semibold text-amber-800 dark:text-amber-400 block">
+              Wolne faktury
             </span>
             <span className="text-lg font-bold text-amber-900 dark:text-amber-200 font-mono">
-              {formatCurrency(stats.estimatedBonus1Percent, 'PLN')}
+              {stats.freeCount} szt.
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-blue-50/50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900">
+            <span className="text-[11px] uppercase tracking-wider font-semibold text-blue-800 dark:text-blue-400 block">
+              Zarezerwowane
+            </span>
+            <span className="text-lg font-bold text-blue-900 dark:text-blue-200 font-mono">
+              {stats.reservedCount} szt.
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
+            <span className="text-[11px] uppercase tracking-wider font-semibold text-emerald-800 dark:text-emerald-400 block">
+              Rozliczone
+            </span>
+            <span className="text-lg font-bold text-emerald-900 dark:text-emerald-200 font-mono">
+              {stats.settledCount} szt.
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-900">
+            <span className="text-[11px] uppercase tracking-wider font-semibold text-indigo-800 dark:text-indigo-300 block">
+              Łącznie przeliczone PLN
+            </span>
+            <span className="text-lg font-bold text-indigo-900 dark:text-indigo-200 font-mono">
+              {formatCurrency(stats.totalPlnConverted, 'PLN')}
             </span>
           </div>
         </div>
 
-        {/* Filters and Search Bar */}
+        {/* Filters bar */}
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {/* Search */}
           <div className="relative flex-1 min-w-[200px]">
@@ -352,6 +522,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
               className="text-xs py-2 px-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none"
             >
               <option value="all">Wszystkie miesiące</option>
+              <option value="free">Tylko wolne (bez miesiąca)</option>
               {availableMonths.map((m) => (
                 <option key={m} value={m}>
                   {formatMonthName(m)} ({m})
@@ -360,46 +531,94 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
             </select>
           </div>
 
-          {/* Person Filter */}
-          <div className="flex items-center gap-1.5">
-            <select
-              value={filterPerson}
-              onChange={(e) => setFilterPerson(e.target.value)}
-              className="text-xs py-2 px-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none"
-            >
-              <option value="all">Wszyscy prowadzący</option>
-              {availablePersons.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </div>
-
           {/* Status Filter */}
           <select
             value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value as any)}
+            onChange={(e) => setFilterStatus(e.target.value)}
             className="text-xs py-2 px-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-medium outline-none"
           >
             <option value="all">Wszystkie statusy</option>
-            <option value="unsettled">Tylko nierozliczone (gotowe)</option>
-            <option value="settled">Rozliczone w premiach</option>
-            <option value="blocked">Zablokowane</option>
+            <option value="WOLNA">Tylko wolne</option>
+            <option value="ZAREZERWOWANA">Zarezerwowane (w przygotowaniu)</option>
+            <option value="ROZLICZONA">Rozliczone (zatwierdzone)</option>
+            <option value="BLOCKED">Zablokowane</option>
           </select>
 
-          {/* Quick Settlement Shortcut */}
-          {filterPerson !== 'all' && filterMonth !== 'all' && (
+          {/* Quick link to settlement for active month */}
+          {filterMonth !== 'all' && filterMonth !== 'free' && (
             <button
-              onClick={() => onNavigateToSettlement(filterPerson, filterMonth)}
+              onClick={() => onNavigateToSettlement(filterMonth)}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition"
             >
               <FileSpreadsheet className="w-3.5 h-3.5" />
-              Rozlicz: {filterPerson} ({formatMonthName(filterMonth)})
+              Otwórz kartę: {formatMonthName(filterMonth)}
             </button>
           )}
         </div>
       </div>
+
+      {/* Group Action Toolbar (Visible when 1 or more items selected) */}
+      {selectedIds.size > 0 && (
+        <div className="bg-slate-900 text-white dark:bg-slate-800 p-3.5 rounded-xl shadow-lg flex flex-wrap items-center justify-between gap-3 border border-slate-700 animate-fadeIn">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-bold bg-blue-600 px-2 py-1 rounded">
+              Zaznaczono: {selectedIds.size}
+            </span>
+            <span className="text-xs text-slate-300">
+              Wykonaj akcję grupową dla wybranych pozycji:
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Quick assign month dropdown */}
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-slate-400">Przypisz do:</span>
+              <select
+                onChange={(e) => {
+                  if (e.target.value) handleBatchAssignMonth(e.target.value);
+                }}
+                defaultValue=""
+                className="text-xs py-1.5 px-2 rounded bg-slate-800 dark:bg-slate-700 text-white border border-slate-600 outline-none"
+              >
+                <option value="" disabled>
+                  Wybierz miesiąc...
+                </option>
+                {availableMonths.map((m) => (
+                  <option key={m} value={m}>
+                    {formatMonthName(m)} ({m})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Free selected */}
+            <button
+              onClick={() => handleBatchAssignMonth('')}
+              className="px-2.5 py-1.5 text-xs font-semibold rounded bg-amber-600 hover:bg-amber-700 text-white transition"
+              title="Usuń przypisanie do miesiąca (status WOLNA)"
+            >
+              Uwolnij
+            </button>
+
+            {/* Batch delete */}
+            <button
+              onClick={handleBatchDelete}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded bg-red-600 hover:bg-red-700 text-white transition"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Usuń grupę ({selectedIds.size})
+            </button>
+
+            {/* Cancel selection */}
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="px-2.5 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition"
+            >
+              Odznacz
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Database Table */}
       <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
@@ -407,19 +626,36 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           <table className="w-full text-left text-sm border-collapse">
             <thead>
               <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/50 text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+                {/* Checkbox select all */}
+                <th className="py-3 px-3 w-10 text-center">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectAllVisible(visibleIds)}
+                    className="p-1 hover:text-blue-600"
+                    title={isAllVisibleSelected ? 'Odznacz wszystkie' : 'Zaznacz wszystkie widoczne'}
+                  >
+                    {isAllVisibleSelected ? (
+                      <CheckSquare className="w-4 h-4 text-blue-600" />
+                    ) : (
+                      <Square className="w-4 h-4 text-slate-400" />
+                    )}
+                  </button>
+                </th>
                 <th className="py-3 px-3 w-10 text-center">Blokada</th>
                 <th className="py-3 px-3">Nr Faktury</th>
-                <th className="py-3 px-3">Prowadzący</th>
                 <th className="py-3 px-3">Projekt</th>
-                <th className="py-3 px-3">Data Faktury</th>
-                <th className="py-3 px-3 text-center">Miesiąc</th>
-                <th className="py-3 px-3 text-right">Kwota Netto</th>
+                <th className="py-3 px-3">Data wystawienia</th>
+                {/* Editable Month Column */}
+                <th className="py-3 px-3 text-center min-w-[150px]">
+                  Miesiąc Rozliczeniowy
+                </th>
+                <th className="py-3 px-3 text-right">Netto</th>
                 <th className="py-3 px-3 text-center">Kurs EUR (NBP)</th>
                 <th className="py-3 px-3 text-right font-bold text-slate-800 dark:text-slate-200">
                   Przeliczone PLN
                 </th>
-                <th className="py-3 px-3 text-center">Status Rozliczenia</th>
-                <th className="py-3 px-3 text-right">Akcje</th>
+                <th className="py-3 px-3 text-center">Status</th>
+                <th className="py-3 px-3">Prowadzący</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -433,6 +669,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 filteredInvoices.map((inv) => {
                   const personColor = getPersonColor(inv.prowadzacy);
                   const isEur = inv.waluta === 'EUR';
+                  const isSelected = selectedIds.has(inv.id);
 
                   return (
                     <tr
@@ -440,19 +677,27 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                       className={`transition-colors ${
                         inv.isBlocked
                           ? 'bg-red-50/70 dark:bg-red-950/30 text-red-900 dark:text-red-200 border-l-4 border-l-red-500'
+                          : isSelected
+                          ? 'bg-blue-50/60 dark:bg-blue-950/40 text-slate-900 dark:text-white'
                           : 'hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-800 dark:text-slate-200'
                       }`}
                     >
-                      {/* Blokada */}
+                      {/* Checkbox for batch actions */}
+                      <td className="py-2.5 px-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectRow(inv.id)}
+                          className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                      </td>
+
+                      {/* Lock */}
                       <td className="py-2.5 px-3 text-center">
                         <button
                           type="button"
                           onClick={() => toggleInvoiceLock(inv.id)}
-                          title={
-                            inv.isBlocked
-                              ? 'Faktura jest zablokowana. Kliknij aby odblokować do rozliczenia'
-                              : 'Kliknij aby zablokować tę fakturę (nie wejdzie do premii)'
-                          }
+                          title={inv.isBlocked ? 'Odblokuj fakturę' : 'Zablokuj fakturę'}
                           className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
                             inv.isBlocked
                               ? 'bg-red-600 text-white hover:bg-red-700'
@@ -472,38 +717,42 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         {inv.nrFaktury}
                       </td>
 
-                      {/* Prowadzący */}
-                      <td className="py-2.5 px-3">
-                        <span
-                          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold border ${personColor.bg} ${personColor.text} ${personColor.border}`}
-                        >
-                          <span className={`w-1.5 h-1.5 rounded-full ${personColor.dot}`} />
-                          {inv.prowadzacy}
-                        </span>
-                      </td>
-
                       {/* Projekt */}
                       <td className="py-2.5 px-3 font-medium text-slate-700 dark:text-slate-300 text-xs">
                         {inv.projekt}
                       </td>
 
-                      {/* Data Faktury */}
+                      {/* Data wystawienia faktury */}
                       <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400 text-xs font-mono">
                         {inv.dataFaktury}
                       </td>
 
-                      {/* Miesiąc */}
+                      {/* Editable Miesiąc Rozliczeniowy */}
                       <td className="py-2.5 px-3 text-center">
-                        <span className="px-2 py-0.5 rounded text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono">
-                          {inv.miesiacRozliczeniowy}
-                        </span>
+                        <select
+                          value={inv.miesiacRozliczeniowy || ''}
+                          onChange={(e) => handleInvoiceMonthChange(inv.id, e.target.value)}
+                          className={`text-xs py-1 px-2 rounded-md font-medium border outline-none cursor-pointer transition ${
+                            inv.status === 'ROZLICZONA'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-800'
+                              : inv.miesiacRozliczeniowy
+                              ? 'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-800'
+                              : 'bg-slate-50 text-slate-500 border-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                          }`}
+                          title="Kliknij, aby zmienić miesiąc rozliczeniowy tej faktury"
+                        >
+                          <option value="">— Wolna (brak) —</option>
+                          {availableMonths.map((m) => (
+                            <option key={m} value={m}>
+                              {formatMonthName(m)} ({m})
+                            </option>
+                          ))}
+                        </select>
                       </td>
 
                       {/* Kwota Netto */}
                       <td className="py-2.5 px-3 text-right font-mono font-semibold text-xs">
-                        <span className="inline-flex items-center gap-1">
-                          {formatCurrency(inv.netto, inv.waluta)}
-                        </span>
+                        {formatCurrency(inv.netto, inv.waluta)}
                       </td>
 
                       {/* Kurs EUR */}
@@ -530,8 +779,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                               <span
                                 className="font-mono text-xs px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 font-medium"
                                 title={
-                                  useEndOfMonthRate
-                                    ? `Kurs końca miesiąca ${inv.miesiacRozliczeniowy}: ${inv.nrTabeliNbp || 'Tabela A NBP'}`
+                                  settings.useEndOfMonthRate
+                                    ? `Kurs końca miesiąca: ${inv.nrTabeliNbp || 'Tabela A NBP'}`
                                     : `Kurs NBP z dnia ${inv.dataKursuNbp || inv.dataFaktury} (${inv.nrTabeliNbp || 'Tabela A'})`
                                 }
                               >
@@ -543,7 +792,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                                   setCustomRateInput(String(inv.kursEurPln || 4.3128));
                                 }}
                                 className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 transition"
-                                title="Ręczna edycja kursu dla tej faktury"
+                                title="Ręczna edycja kursu"
                               >
                                 <Edit2 className="w-3 h-3" />
                               </button>
@@ -559,37 +808,33 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         {formatCurrency(inv.kwotaPln, 'PLN')}
                       </td>
 
-                      {/* Status Rozliczenia */}
+                      {/* Status badge: WOLNA / ZAREZERWOWANA / ROZLICZONA */}
                       <td className="py-2.5 px-3 text-center">
-                        {inv.rozliczonaWId ? (
-                          <span
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                            title={`Rozliczona w karcie: ${inv.rozliczonaWId}`}
-                          >
+                        {inv.status === 'ROZLICZONA' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
                             <CheckCircle className="w-3 h-3" />
                             Rozliczona
                           </span>
-                        ) : inv.isBlocked ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300">
-                            <Lock className="w-3 h-3" />
-                            Zablokowana
+                        ) : inv.status === 'ZAREZERWOWANA' || inv.miesiacRozliczeniowy ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+                            <Bookmark className="w-3 h-3" />
+                            Zarezerwowana
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                            Nierozliczona
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            Wolna
                           </span>
                         )}
                       </td>
 
-                      {/* Akcje */}
-                      <td className="py-2.5 px-3 text-right">
-                        <button
-                          onClick={() => deleteInvoice(inv.id)}
-                          className="p-1 text-slate-400 hover:text-red-600 transition rounded"
-                          title="Usuń fakturę z bazy"
+                      {/* Prowadzący (informacyjny z kolorowym tagiem) */}
+                      <td className="py-2.5 px-3">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${personColor.bg} ${personColor.text} ${personColor.border}`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                          <span className={`w-1.5 h-1.5 rounded-full ${personColor.dot}`} />
+                          {inv.prowadzacy}
+                        </span>
                       </td>
                     </tr>
                   );
@@ -599,6 +844,123 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Modal: Stwórz nowy miesiąc */}
+      {isNewMonthModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-xl p-6 max-w-md w-full border border-slate-200 dark:border-slate-800 shadow-xl">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
+              Stwórz nowy miesiąc rozliczeniowy
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mb-4">
+              Wpisz oznaczenie miesiąca (np. <code>2026-11</code>, <code>2026-12</code>).
+              Miesiąc ten pojawi się od razu w liście wyboru przy każdej fakturze.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Format YYYY-MM (np. 2026-11)
+                </label>
+                <input
+                  type="text"
+                  value={newMonthInput}
+                  onChange={(e) => setNewMonthInput(e.target.value)}
+                  placeholder="2026-11"
+                  className="w-full text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                  autoFocus
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsNewMonthModalOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Anuluj
+              </button>
+              <button
+                type="button"
+                onClick={handleAddNewMonth}
+                className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Dodaj miesiąc
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Algorytm dobierania wolnych faktur do kwoty */}
+      {isAutoAllocModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-xl p-6 max-w-md w-full border border-slate-200 dark:border-slate-800 shadow-xl">
+            <div className="flex items-center gap-2 mb-2 text-indigo-600">
+              <Sparkles className="w-5 h-5" />
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                Algorytm doboru wolnych faktur
+              </h3>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mb-4">
+              Wpisz docelową kwotę rozliczenia (w PLN). Algorytm automatycznie pobierze wolne faktury chronologicznie według daty wystawienia, aż suma osiągnie wskazaną wartość, i przypisze je jako zarezerwowane do wybranego miesiąca.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Docelowa kwota rozliczenia (PLN)
+                </label>
+                <input
+                  type="text"
+                  value={targetAmountInput}
+                  onChange={(e) => setTargetAmountInput(e.target.value)}
+                  placeholder="np. 200000"
+                  className="w-full text-base font-mono font-bold p-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Do jakiego miesiąca przypisać faktury?
+                </label>
+                <select
+                  value={targetMonthSelect}
+                  onChange={(e) => setTargetMonthSelect(e.target.value)}
+                  className="w-full text-sm p-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+                >
+                  {availableMonths.map((m) => (
+                    <option key={m} value={m}>
+                      {formatMonthName(m)} ({m})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="p-3 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-900 text-xs text-indigo-900 dark:text-indigo-200">
+                Pobrane pozycje otrzymają status <strong>Zarezerwowana</strong>. Będziesz mógł je jeszcze ręcznie korygować, dodawać lub usuwać.
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsAutoAllocModalOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Anuluj
+              </button>
+              <button
+                type="button"
+                onClick={handleAutoAllocateInvoices}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Dobierz i przypisz faktury
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
