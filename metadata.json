@@ -1,0 +1,6 @@
+{
+  "name": "System Rozliczania Premii i Faktur",
+  "description": "Aplikacja do importu faktur z Excela, deduplikacji w bazie danych, pobierania kursów EUR NBP oraz generowania zestawień premii i obciążeń projektowych.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
