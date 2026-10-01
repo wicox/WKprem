@@ -1,14 +1,23 @@
 @import "tailwindcss";
 
 @media print {
-  body {
-    background-color: #ffffff !important;
-    color: #000000 !important;
-    padding: 0 !important;
-    margin: 0 !important;
+  /* Remove default browser headers (date/time) and footers (URL/page numbers) */
+  @page {
+    size: A4 portrait;
+    margin: 0mm;
   }
 
-  header, nav, .print\:hidden {
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    overflow: hidden !important;
+  }
+
+  header, nav, aside, .print\:hidden, footer {
     display: none !important;
   }
 
@@ -18,8 +27,17 @@
     margin: 0 !important;
   }
 
-  @page {
-    size: A4 portrait;
-    margin: 10mm 15mm 10mm 15mm;
+  .a4-print-sheet {
+    width: 210mm !important;
+    height: 297mm !important;
+    max-height: 297mm !important;
+    padding: 10mm 12mm !important;
+    margin: 0 auto !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+    page-break-after: avoid !important;
+    page-break-inside: avoid !important;
+    box-sizing: border-box !important;
   }
 }

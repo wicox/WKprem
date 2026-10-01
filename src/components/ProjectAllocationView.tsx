@@ -1,8 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { StoredInvoice, AppSettings } from '../types/bonus';
 import { formatCurrency, formatMonthName } from '../utils/colors';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
+import { downloadElementAsJpg, downloadElementAsPdf } from '../services/exportService';
 import * as XLSX from 'xlsx';
 import {
   PieChart,
@@ -30,6 +29,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
   const printRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [viewMode, setViewMode] = useState<'itemized' | 'aggregated'>('itemized');
+  const [notification, setNotification] = useState<string | null>(null);
 
   const currentMonth = selectedMonth || settings.activeMonth || '2026-07';
 
@@ -50,7 +50,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     );
   }, [invoices, currentMonth]);
 
-  // Determine rate
+  // Active rate
   const activeRate = useMemo(() => {
     const eurInv = eligibleInvoices.find((i) => i.waluta === 'EUR' && i.kursEurPln);
     return eurInv?.kursEurPln || 4.3128;
@@ -71,7 +71,7 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     return { exactBonus1Percent: exact };
   }, [eligibleInvoices, activeRate, settings.useEndOfMonthRate]);
 
-  // Itemized rows (1-to-1 match with 02.jpg)
+  // Itemized rows
   const itemizedRows = useMemo(() => {
     const rows = eligibleInvoices.map((inv, idx) => {
       const rate = inv.waluta === 'EUR' ? (settings.useEndOfMonthRate ? activeRate : (inv.kursEurPln || activeRate)) : 1.0;
@@ -88,12 +88,10 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
       };
     });
 
-    // Check sum of individual rounded rows vs exact total bonus to reconcile 1-grosz rounding differences
     if (rows.length > 0) {
       const sumOfRounded = rows.reduce((acc, r) => acc + r.chargePln, 0);
       const diff = Math.round((exactBonus1Percent - sumOfRounded) * 100) / 100;
       if (Math.abs(diff) > 0 && Math.abs(diff) < 0.1) {
-        // Adjust the last row by the 1-2 grosz rounding remainder
         rows[rows.length - 1].chargePln = Math.round((rows[rows.length - 1].chargePln + diff) * 100) / 100;
       }
     }
@@ -143,6 +141,13 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
 
   const monthLabel = formatMonthName(currentMonth);
 
+  const rowDensityClass = useMemo(() => {
+    const count = viewMode === 'itemized' ? itemizedRows.length : aggregatedRows.length;
+    if (count > 28) return 'py-0.5 px-2 text-[10px] leading-tight';
+    if (count > 18) return 'py-1 px-3 text-[11px] leading-snug';
+    return 'py-1.5 px-4 text-xs';
+  }, [viewMode, itemizedRows.length, aggregatedRows.length]);
+
   // Export to Excel
   const handleExportExcel = () => {
     const wb = XLSX.utils.book_new();
@@ -157,13 +162,13 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
       rows.push([
         r.lp,
         r.projekt,
-        `${r.kwotaWaluta.toFixed(2)} ${r.waluta === 'EUR' ? '€' : 'zł'}`,
-        `${r.chargePln.toFixed(2)} zł`,
+        `${r.kwotaWaluta.toFixed(2).replace('.', ',')} ${r.waluta === 'EUR' ? '€' : 'zł'}`,
+        `${r.chargePln.toFixed(2).replace('.', ',')} zł`,
       ]);
     });
 
     rows.push([]);
-    rows.push(['', '', 'SUMA OBCIĄŻEŃ:', `${exactBonus1Percent.toFixed(2)} zł`]);
+    rows.push(['', '', 'SUMA OBCIĄŻEŃ:', `${exactBonus1Percent.toFixed(2).replace('.', ',')} zł`]);
 
     const ws = XLSX.utils.aoa_to_sheet(rows);
     XLSX.utils.book_append_sheet(wb, ws, 'Podział na Projekty');
@@ -175,21 +180,15 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     if (!printRef.current) return;
     setIsExporting(true);
     try {
-      const element = printRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-      });
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-
-      pdf.addImage(imgData, 'PNG', 0, 10, pdfWidth, pdfHeight);
-      pdf.save(`Obciazenie_Projektow_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.pdf`);
+      await downloadElementAsPdf(
+        printRef.current,
+        `Obciazenie_Projektow_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.pdf`
+      );
+      setNotification('Pomyślnie wygenerowano i pobrano plik PDF!');
+      setTimeout(() => setNotification(null), 4000);
     } catch (err) {
       console.error('PDF export failed', err);
+      window.print();
     } finally {
       setIsExporting(false);
     }
@@ -200,18 +199,15 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     if (!printRef.current) return;
     setIsExporting(true);
     try {
-      const element = printRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-      });
-      const link = document.createElement('a');
-      link.download = `Obciazenie_Projektow_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.jpg`;
-      link.href = canvas.toDataURL('image/jpeg', 0.95);
-      link.click();
+      await downloadElementAsJpg(
+        printRef.current,
+        `Obciazenie_Projektow_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.jpg`
+      );
+      setNotification('Pomyślnie wygenerowano i pobrano plik JPG!');
+      setTimeout(() => setNotification(null), 4000);
     } catch (err) {
       console.error('JPG export failed', err);
+      alert('Nie udało się wygenerować JPG: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsExporting(false);
     }
@@ -240,25 +236,26 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
             <button
               onClick={() => window.print()}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition"
+              title="Drukuj bezpośrednio na A4 bez nagłówków i stopki"
             >
               <Printer className="w-3.5 h-3.5" />
-              Drukuj
+              Drukuj A4
             </button>
             <button
               onClick={handleExportPdf}
               disabled={isExporting}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5" />
-              PDF
+              {isExporting ? 'Generowanie...' : 'PDF'}
             </button>
             <button
               onClick={handleExportJpg}
               disabled={isExporting}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition disabled:opacity-50"
             >
               <ImageIcon className="w-3.5 h-3.5" />
-              JPG
+              {isExporting ? 'Generowanie...' : 'JPG'}
             </button>
             <button
               onClick={handleExportExcel}
@@ -323,38 +320,43 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
         </div>
       </div>
 
-      {/* Exact Sheet 02.jpg Container */}
+      {notification && (
+        <div className="p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg text-emerald-800 dark:text-emerald-200 text-xs font-medium">
+          {notification}
+        </div>
+      )}
+
+      {/* Exact Sheet 02.jpg Printable Container (A4 portrait 1-page fit) */}
       <div className="flex justify-center">
         <div
           ref={printRef}
-          className="w-full max-w-[820px] bg-white text-slate-950 p-8 sm:p-12 shadow-md rounded-lg border border-slate-200 font-sans print:border-none print:shadow-none print:p-0 print:m-0"
-          style={{ minHeight: '1050px' }}
+          className="a4-print-sheet w-full max-w-[820px] bg-white text-black p-6 sm:p-10 shadow-md rounded-lg border border-slate-200 font-sans print:border-none print:shadow-none print:p-0 print:m-0"
         >
           {/* Header matching 02.jpg */}
-          <div className="text-center mb-6">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 mb-1">
+          <div className="text-center mb-4">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-black mb-1">
               Premia {settings.beneficiaryName} - {monthLabel}
             </h2>
-            <h3 className="text-sm sm:text-base font-bold text-slate-900">
+            <h3 className="text-sm sm:text-base font-bold text-black">
               Premia - kwoty z podziałem na projekty.
             </h3>
           </div>
 
           {/* Table matching 02.jpg */}
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse border-2 border-black text-sm">
+            <table className="w-full border-collapse border-2 border-black">
               <thead>
                 <tr className="border-b-2 border-black bg-slate-50 font-bold text-center">
-                  <th className="border border-black py-2.5 px-3 w-14 text-center font-bold">
+                  <th className="border border-black py-2 px-2 w-12 text-center font-bold">
                     Lp.
                   </th>
-                  <th className="border border-black py-2.5 px-6 text-center font-bold">
+                  <th className="border border-black py-2 px-4 text-center font-bold">
                     Projekt
                   </th>
-                  <th className="border border-black py-2.5 px-6 text-center font-bold">
+                  <th className="border border-black py-2 px-4 text-center font-bold">
                     Kwota EUR - Projekt-Serwis
                   </th>
-                  <th className="border border-black py-2.5 px-6 text-center font-bold">
+                  <th className="border border-black py-2 px-4 text-center font-bold">
                     Kwota obciążenia - Projekt-Serwis
                   </th>
                 </tr>
@@ -369,17 +371,17 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
                     </tr>
                   ) : (
                     itemizedRows.map((row) => (
-                      <tr key={row.lp} className="border-b border-black text-xs hover:bg-slate-50/50">
-                        <td className="border border-black py-1.5 px-3 text-center font-mono">
+                      <tr key={row.lp} className="border-b border-black hover:bg-slate-50/50">
+                        <td className={`border border-black text-center font-mono ${rowDensityClass}`}>
                           {row.lp}
                         </td>
-                        <td className="border border-black py-1.5 px-6 font-medium">
+                        <td className={`border border-black font-medium ${rowDensityClass}`}>
                           {row.projekt}
                         </td>
-                        <td className="border border-black py-1.5 px-6 text-right font-mono font-medium">
+                        <td className={`border border-black text-right font-mono font-medium ${rowDensityClass}`}>
                           {formatCurrency(row.kwotaWaluta, row.waluta)}
                         </td>
-                        <td className="border border-black py-1.5 px-6 text-right font-mono font-bold">
+                        <td className={`border border-black text-right font-mono font-bold ${rowDensityClass}`}>
                           {formatCurrency(row.chargePln, 'PLN')}
                         </td>
                       </tr>
@@ -387,22 +389,22 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
                   )
                 ) : (
                   aggregatedRows.map((row) => (
-                    <tr key={row.lp} className="border-b border-black text-xs hover:bg-slate-50/50">
-                      <td className="border border-black py-1.5 px-3 text-center font-mono">
+                    <tr key={row.lp} className="border-b border-black hover:bg-slate-50/50">
+                      <td className={`border border-black text-center font-mono ${rowDensityClass}`}>
                         {row.lp}
                       </td>
-                      <td className="border border-black py-1.5 px-6 font-medium">
+                      <td className={`border border-black font-medium ${rowDensityClass}`}>
                         {row.projekt}
                         {row.count > 1 && (
                           <span className="text-[10px] text-slate-500 ml-2">({row.count} faktury)</span>
                         )}
                       </td>
-                      <td className="border border-black py-1.5 px-6 text-right font-mono font-medium">
+                      <td className={`border border-black text-right font-mono font-medium ${rowDensityClass}`}>
                         {row.kwotaEur > 0
                           ? formatCurrency(row.kwotaEur, 'EUR')
                           : formatCurrency(row.kwotaPln, 'PLN')}
                       </td>
-                      <td className="border border-black py-1.5 px-6 text-right font-mono font-bold">
+                      <td className={`border border-black text-right font-mono font-bold ${rowDensityClass}`}>
                         {formatCurrency(row.chargePln, 'PLN')}
                       </td>
                     </tr>
@@ -410,10 +412,9 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
                 )}
               </tbody>
               <tfoot>
-                {/* Total row matching 02.jpg bottom right cell */}
                 <tr>
                   <td colSpan={3} className="border-t-2 border-black"></td>
-                  <td className="border-2 border-black py-2.5 px-6 text-right font-mono font-extrabold text-sm sm:text-base bg-slate-100">
+                  <td className="border-2 border-black py-2.5 px-4 text-right font-mono font-extrabold text-sm sm:text-base bg-slate-100">
                     {formatCurrency(exactBonus1Percent, 'PLN')}
                   </td>
                 </tr>

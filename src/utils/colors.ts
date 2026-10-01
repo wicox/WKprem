@@ -36,23 +36,17 @@ export function formatMonthName(monthStr: string): string {
 }
 
 export function formatCurrency(amount: number, currency: string = 'PLN'): string {
-  const formatted = new Intl.NumberFormat('pl-PL', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
+  const rounded = (Math.round((amount || 0) * 100) / 100).toFixed(2).replace('.', ',');
 
   if (currency === 'EUR' || currency === '€') {
-    return `${formatted} €`;
+    return `${rounded} €`;
   }
   if (currency === 'PLN' || currency === 'zł') {
-    return `${formatted} zł`;
+    return `${rounded} zł`;
   }
-  return `${formatted} ${currency}`;
+  return `${rounded} ${currency}`;
 }
 
 export function formatRate(rate: number): string {
-  return new Intl.NumberFormat('pl-PL', {
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  }).format(rate);
+  return (rate || 0).toFixed(4).replace('.', ',');
 }

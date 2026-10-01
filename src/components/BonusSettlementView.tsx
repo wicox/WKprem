@@ -2,9 +2,8 @@ import React, { useState, useMemo, useRef } from 'react';
 import { StoredInvoice, AppSettings } from '../types/bonus';
 import { formatCurrency, formatMonthName, formatRate } from '../utils/colors';
 import { exportSettlementToExcel } from '../services/excelService';
+import { downloadElementAsJpg, downloadElementAsPdf } from '../services/exportService';
 import { saveStoredInvoices, saveAppSettings } from '../services/storageService';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 import {
   FileText,
   Printer,
@@ -16,8 +15,6 @@ import {
   Edit2,
   Check,
   RotateCcw,
-  AlertCircle,
-  PlusCircle,
 } from 'lucide-react';
 
 interface BonusSettlementViewProps {
@@ -41,7 +38,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
   const [isExporting, setIsExporting] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
 
-  // Editable Beneficiary Name state
+  // Editable Beneficiary Name
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(settings.beneficiaryName || 'Jan Kowalski');
 
@@ -57,14 +54,13 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     return Array.from(new Set(list)).sort().reverse();
   }, [invoices, settings.customMonths]);
 
-  // All unblocked invoices assigned to this settlement month (regardless of manager)
+  // All unblocked invoices assigned to this settlement month
   const eligibleInvoices = useMemo(() => {
     return invoices.filter(
       (inv) => inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked
     );
   }, [invoices, currentMonth]);
 
-  // Check settlement status of this month's invoices
   const allSettled = eligibleInvoices.length > 0 && eligibleInvoices.every((i) => i.status === 'ROZLICZONA');
 
   // Active rate for month
@@ -117,7 +113,14 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     };
   }, [eligibleInvoices, settings.useEndOfMonthRate, activeMonthRate]);
 
-  // Save new beneficiary name
+  // Dynamic row compact styling based on invoice count to guarantee single A4 page fit
+  const rowDensityClass = useMemo(() => {
+    const count = eligibleInvoices.length;
+    if (count > 28) return 'py-0.5 px-2 text-[10px] leading-tight';
+    if (count > 18) return 'py-1 px-2.5 text-[11px] leading-snug';
+    return 'py-1.5 px-3 text-xs';
+  }, [eligibleInvoices.length]);
+
   const handleSaveName = () => {
     const trimmed = nameInput.trim() || 'Jan Kowalski';
     const updated = { ...settings, beneficiaryName: trimmed };
@@ -126,7 +129,6 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     setIsEditingName(false);
   };
 
-  // Mark all invoices in this month as ROZLICZONA
   const handleMarkAsSettled = () => {
     const updated = invoices.map((inv) => {
       if (inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked) {
@@ -147,7 +149,6 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     setTimeout(() => setNotification(null), 5000);
   };
 
-  // Revert / unmark as settled to allow editing
   const handleRevertToReserved = () => {
     const updated = invoices.map((inv) => {
       if (inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked) {
@@ -163,7 +164,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     onInvoicesChange(updated);
     saveStoredInvoices(updated);
     setNotification(
-      `Cofnięto status faktur do ZAREZERWOWANA. Możesz teraz dodawać, modyfikować lub usuwać faktury z tego miesiąca w Bazie Danych.`
+      `Cofnięto status faktur do ZAREZERWOWANA. Możesz teraz dokonywać zmian w Bazie Danych.`
     );
     setTimeout(() => setNotification(null), 5000);
   };
@@ -192,21 +193,16 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     if (!printRef.current) return;
     setIsExporting(true);
     try {
-      const element = printRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-      });
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-
-      pdf.addImage(imgData, 'PNG', 0, 10, pdfWidth, pdfHeight);
-      pdf.save(`Premia_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.pdf`);
+      await downloadElementAsPdf(
+        printRef.current,
+        `Premia_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.pdf`
+      );
+      setNotification('Pomyślnie wygenerowano i pobrano plik PDF!');
+      setTimeout(() => setNotification(null), 4000);
     } catch (err) {
       console.error('PDF export failed', err);
+      // Native fallback
+      window.print();
     } finally {
       setIsExporting(false);
     }
@@ -217,18 +213,15 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     if (!printRef.current) return;
     setIsExporting(true);
     try {
-      const element = printRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-      });
-      const link = document.createElement('a');
-      link.download = `Premia_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.jpg`;
-      link.href = canvas.toDataURL('image/jpeg', 0.95);
-      link.click();
+      await downloadElementAsJpg(
+        printRef.current,
+        `Premia_${settings.beneficiaryName.replace(/\s+/g, '_')}_${currentMonth}.jpg`
+      );
+      setNotification('Pomyślnie wygenerowano i pobrano plik JPG!');
+      setTimeout(() => setNotification(null), 4000);
     } catch (err) {
       console.error('JPG export failed', err);
+      alert('Nie udało się wygenerować JPG: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsExporting(false);
     }
@@ -238,7 +231,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Control Toolbar */}
+      {/* Control Toolbar (Hidden during print) */}
       <div className="print:hidden bg-white dark:bg-slate-900 rounded-xl p-6 border border-slate-200 dark:border-slate-800 shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
@@ -247,7 +240,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               Krok 3: Karta rozliczenia premii (Wzór 01.jpg)
             </div>
 
-            {/* Editable Beneficiary Name */}
+            {/* Beneficiary Name */}
             <div className="flex items-center gap-2">
               {isEditingName ? (
                 <div className="flex items-center gap-2">
@@ -261,7 +254,6 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                   <button
                     onClick={handleSaveName}
                     className="p-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-bold"
-                    title="Zapisz nazwisko"
                   >
                     <Check className="w-4 h-4" />
                   </button>
@@ -277,7 +269,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                       setIsEditingName(true);
                     }}
                     className="p-1 text-slate-400 hover:text-blue-600 transition"
-                    title="Kliknij, aby zmienić Imię i Nazwisko osoby premiowanej"
+                    title="Zmień nazwisko"
                   >
                     <Edit2 className="w-4 h-4" />
                   </button>
@@ -285,7 +277,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               )}
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Rozliczenie premii dla wskazanego miesiąca. Wszystkie przypisane faktury tworzą jeden wspólny worek rozliczeniowy.
+              Wydruk mieści się na jednej stronie A4 pion bez nagłówków przeglądarki i adresów URL.
             </p>
           </div>
 
@@ -294,25 +286,26 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
             <button
               onClick={() => window.print()}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition"
+              title="Drukuj bezpośrednio na A4 bez nagłówków i stopki"
             >
               <Printer className="w-3.5 h-3.5" />
-              Drukuj
+              Drukuj A4
             </button>
             <button
               onClick={handleExportPdf}
               disabled={isExporting}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5" />
-              PDF
+              {isExporting ? 'Generowanie...' : 'PDF'}
             </button>
             <button
               onClick={handleExportJpg}
               disabled={isExporting}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition disabled:opacity-50"
             >
               <ImageIcon className="w-3.5 h-3.5" />
-              JPG
+              {isExporting ? 'Generowanie...' : 'JPG'}
             </button>
             <button
               onClick={handleExportExcel}
@@ -324,12 +317,12 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
           </div>
         </div>
 
-        {/* Month Selector and Rate Setting */}
+        {/* Filters */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
           <div>
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
               <Calendar className="w-3.5 h-3.5 text-blue-600" />
-              Wybierz Miesiąc Rozliczeniowy
+              Miesiąc Rozliczeniowy
             </label>
             <select
               value={currentMonth}
@@ -362,7 +355,6 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
             </label>
           </div>
 
-          {/* Settlement Status and Revert / Settle buttons */}
           <div className="flex items-end gap-2">
             {!allSettled ? (
               <button
@@ -377,7 +369,6 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               <button
                 onClick={handleRevertToReserved}
                 className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-xs transition"
-                title="Cofnij do statusu Zarezerwowana, aby dokonać zmian w bazie danych"
               >
                 <RotateCcw className="w-4 h-4" />
                 Odznacz (Cofnij do Zarezerwowana)
@@ -387,135 +378,130 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
         </div>
       </div>
 
-      {/* Notification */}
       {notification && (
         <div className="p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg text-emerald-800 dark:text-emerald-200 text-xs font-medium">
           {notification}
         </div>
       )}
 
-      {/* Exact Sheet 01.jpg Container */}
+      {/* Exact Sheet 01.jpg Printable Container (A4 portrait 1-page fit) */}
       <div className="flex justify-center">
         <div
           ref={printRef}
-          className="w-full max-w-[820px] bg-white text-slate-950 p-8 sm:p-12 shadow-md rounded-lg border border-slate-200 font-sans print:border-none print:shadow-none print:p-0 print:m-0"
-          style={{ minHeight: '1050px' }}
+          className="a4-print-sheet w-full max-w-[820px] bg-white text-black p-6 sm:p-10 shadow-md rounded-lg border border-slate-200 font-sans print:border-none print:shadow-none print:p-0 print:m-0"
         >
-          {/* Header centered matching 01.jpg */}
-          <div className="text-center mb-6">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+          {/* Header matching 01.jpg */}
+          <div className="text-center mb-4">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-black">
               Premia {settings.beneficiaryName} - {monthLabel}
             </h2>
           </div>
 
-          {/* Main Table Matching 01.jpg */}
+          {/* Main Table: Always showing Kurs EUR and Kwota w PLN */}
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse border-2 border-black text-sm">
+            <table className="w-full border-collapse border-2 border-black">
               <thead>
                 <tr className="border-b-2 border-black bg-slate-50 font-bold text-center">
-                  <th className="border border-black py-2 px-3 w-12 text-center font-bold">
+                  <th className="border border-black py-1.5 px-2 w-10 text-center font-bold">
                     Lp.
                   </th>
-                  <th className="border border-black py-2 px-4 text-center font-bold">
+                  <th className="border border-black py-1.5 px-3 text-center font-bold">
                     Projekt
                   </th>
                   <th
                     colSpan={2}
-                    className="border border-black py-2 px-4 text-center font-bold"
+                    className="border border-black py-1.5 px-3 text-center font-bold"
                   >
                     Numer Faktury
                   </th>
-                  <th className="border border-black py-2 px-4 text-center font-bold">
+                  <th className="border border-black py-1.5 px-3 text-center font-bold">
                     Kwota
                   </th>
-                  {!settings.useEndOfMonthRate && (
-                    <th className="border border-black py-2 px-3 text-center font-bold text-xs">
-                      Kurs NBP
-                    </th>
-                  )}
+                  {/* Exchange rate column: ALWAYS visible */}
+                  <th className="border border-black py-1.5 px-2 text-center font-bold w-24">
+                    Kurs EUR
+                  </th>
+                  {/* Kwota w PLN column */}
+                  <th className="border border-black py-1.5 px-3 text-center font-bold">
+                    Kwota w PLN
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {eligibleInvoices.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={settings.useEndOfMonthRate ? 5 : 6}
+                      colSpan={7}
                       className="border border-black py-8 text-center text-slate-500 italic"
                     >
-                      Brak przypisanych faktur do miesiąca {monthLabel}. Przypisz faktury w zakładce Baza Danych.
+                      Brak przypisanych faktur do miesiąca {monthLabel}.
                     </td>
                   </tr>
                 ) : (
-                  eligibleInvoices.map((inv, idx) => (
-                    <tr key={inv.id} className="border-b border-black text-xs hover:bg-slate-50/50">
-                      <td className="border border-black py-1.5 px-3 text-center font-mono">
-                        {idx + 1}
-                      </td>
-                      <td className="border border-black py-1.5 px-3 font-medium">
-                        {inv.projekt}
-                      </td>
-                      <td className="border border-black py-1.5 px-3 text-slate-600 text-center w-20">
-                        Faktura
-                      </td>
-                      <td className="border border-black py-1.5 px-3 font-mono">
-                        {inv.nrFaktury}
-                      </td>
-                      <td className="border border-black py-1.5 px-4 text-right font-mono font-medium">
-                        {formatCurrency(inv.netto, inv.waluta)}
-                      </td>
-                      {!settings.useEndOfMonthRate && (
-                        <td className="border border-black py-1.5 px-3 text-center font-mono text-[11px]">
-                          {inv.waluta === 'EUR' ? formatRate(inv.kursEurPln || activeMonthRate.rate) : '-'}
+                  eligibleInvoices.map((inv, idx) => {
+                    const rowRate = inv.waluta === 'EUR'
+                      ? (settings.useEndOfMonthRate ? activeMonthRate.rate : (inv.kursEurPln || activeMonthRate.rate))
+                      : 1.0;
+                    const rowPln = inv.waluta === 'EUR' ? inv.netto * rowRate : inv.netto;
+
+                    return (
+                      <tr key={inv.id} className="border-b border-black hover:bg-slate-50/50">
+                        <td className={`border border-black text-center font-mono ${rowDensityClass}`}>
+                          {idx + 1}
                         </td>
-                      )}
-                    </tr>
-                  ))
+                        <td className={`border border-black font-medium ${rowDensityClass}`}>
+                          {inv.projekt}
+                        </td>
+                        <td className={`border border-black text-slate-600 text-center w-16 ${rowDensityClass}`}>
+                          Faktura
+                        </td>
+                        <td className={`border border-black font-mono ${rowDensityClass}`}>
+                          {inv.nrFaktury}
+                        </td>
+                        <td className={`border border-black text-right font-mono font-medium ${rowDensityClass}`}>
+                          {formatCurrency(inv.netto, inv.waluta)}
+                        </td>
+                        <td className={`border border-black text-center font-mono ${rowDensityClass}`}>
+                          {inv.waluta === 'EUR' ? formatRate(rowRate) : '1,0000'}
+                        </td>
+                        <td className={`border border-black text-right font-mono font-bold ${rowDensityClass}`}>
+                          {formatCurrency(rowPln, 'PLN')}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
 
                 {/* Subtotal row */}
                 <tr className="border-t-2 border-black font-bold">
-                  <td colSpan={4} className="py-2.5 px-3 text-right"></td>
-                  <td className="border border-black py-2.5 px-4 text-right font-mono font-bold bg-slate-50 text-sm">
+                  <td colSpan={4} className="py-2 px-3 text-right"></td>
+                  <td className="border border-black py-2 px-3 text-right font-mono font-bold bg-slate-50 text-xs sm:text-sm">
                     {formatCurrency(calculations.sumEur, 'EUR')}
                   </td>
-                  {!settings.useEndOfMonthRate && <td className="border border-black"></td>}
+                  <td className="border border-black"></td>
+                  <td className="border border-black py-2 px-3 text-right font-mono font-bold bg-slate-50 text-xs sm:text-sm">
+                    {formatCurrency(calculations.totalConvertedPln, 'PLN')}
+                  </td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          {/* Underneath Calculation Table Matching 01.jpg */}
-          <div className="mt-8">
-            <table className="w-full border-collapse border-2 border-black text-sm">
+          {/* Underneath Calculation Table: ONLY Summary Row */}
+          <div className="mt-5">
+            <table className="w-full border-collapse border-2 border-black text-xs sm:text-sm">
               <tbody>
-                {/* Suma PLN */}
-                <tr className="border-b border-black">
-                  <td className="border border-black py-2.5 px-4 font-bold bg-slate-50 w-1/4">
-                    Suma PLN
-                  </td>
-                  <td className="border border-black py-2.5 px-4 text-right font-mono font-bold w-1/4">
-                    {formatCurrency(calculations.sumEur, 'EUR')}
-                  </td>
-                  <td className="border border-black py-2.5 px-4 text-center font-mono font-medium w-1/4">
-                    {formatRate(activeMonthRate.rate)} PLN
-                  </td>
-                  <td className="border border-black py-2.5 px-4 text-right font-mono font-bold w-1/4 bg-slate-50">
-                    {formatCurrency(calculations.totalConvertedPln, 'PLN')}
-                  </td>
-                </tr>
-
-                {/* Premia 1% (Brutto) */}
                 <tr>
-                  <td className="border border-black py-2.5 px-4 font-bold bg-slate-50">
+                  <td className="border border-black py-2.5 px-4 font-bold bg-slate-50 w-1/3">
                     Premia 1% (Brutto)
                   </td>
-                  <td className="border border-black py-2.5 px-4 text-right font-mono font-bold">
+                  <td className="border border-black py-2.5 px-4 text-right font-mono font-bold w-1/3">
                     {formatCurrency(calculations.totalConvertedPln, 'PLN')}
                   </td>
-                  <td className="border border-black py-2.5 px-4 text-center font-bold">
+                  <td className="border border-black py-2.5 px-3 text-center font-bold w-16">
                     1%
                   </td>
-                  <td className="border border-black py-2.5 px-4 text-right font-mono font-bold bg-slate-100 text-base">
+                  <td className="border border-black py-2.5 px-4 text-right font-mono font-bold bg-slate-100 text-sm sm:text-base w-1/3">
                     {formatCurrency(calculations.bonus1Percent, 'PLN')}
                   </td>
                 </tr>
@@ -523,24 +509,21 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
             </table>
           </div>
 
-          {/* NBP Citation & Signature matching 01.jpg */}
-          <div className="mt-8 text-xs text-slate-800 space-y-1">
-            <p className="underline text-blue-800 font-medium">
-              Tabela nr {activeMonthRate.tableNo} z dnia {activeMonthRate.date}
-            </p>
-            <p>Tabela A kursów średnich</p>
-            <div className="flex items-center justify-between pt-2">
-              <span className="font-bold text-sm">
+          {/* NBP Citation on left AND Signature on right ON THE SAME LEVEL to save space */}
+          <div className="mt-6 pt-2 flex flex-wrap items-center justify-between text-xs text-black border-t border-slate-200">
+            <div className="space-y-0.5">
+              <p className="underline font-semibold">
+                Tabela nr {activeMonthRate.tableNo} z dnia {activeMonthRate.date}
+              </p>
+              <p className="text-slate-600">Tabela A kursów średnich</p>
+              <p className="font-bold text-sm text-black">
                 1 EUR = {formatRate(activeMonthRate.rate)} zł
-              </span>
+              </p>
             </div>
-          </div>
 
-          {/* Signature */}
-          <div className="mt-16 pt-8 flex justify-end">
-            <div className="text-right">
-              <div className="text-xs text-slate-600 mb-1">Podpis</div>
-              <div className="w-56 border-b border-dotted border-slate-600 inline-block h-4"></div>
+            <div className="text-right mt-2 sm:mt-0">
+              <div className="text-xs text-slate-600 mb-2">Podpis</div>
+              <div className="w-48 border-b border-dotted border-black inline-block h-2"></div>
             </div>
           </div>
         </div>
