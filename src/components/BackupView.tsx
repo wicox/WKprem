@@ -1,6 +1,14 @@
 import React, { useState, useRef } from 'react';
 import { StoredInvoice } from '../types/bonus';
-import { AppSettings, exportDatabaseToJson, importDatabaseFromJson, saveStoredInvoices, INITIAL_DEMO_INVOICES } from '../services/storageService';
+import {
+  AppSettings,
+  exportDatabaseToJson,
+  importDatabaseFromJson,
+  saveStoredInvoices,
+  getStoredInvoices,
+  getAppSettings,
+  INITIAL_DEMO_INVOICES,
+} from '../services/storageService';
 import {
   Save,
   Upload,
@@ -50,14 +58,11 @@ export const BackupView: React.FC<BackupViewProps> = ({
       const content = event.target?.result as string;
       const res = importDatabaseFromJson(content);
       if (res.success) {
-        // reload from storage
-        import('../services/storageService').then(({ getStoredInvoices, getAppSettings }) => {
-          onInvoicesChange(getStoredInvoices());
-          onSettingsChange(getAppSettings());
-          setNotification({
-            type: 'success',
-            message: res.message,
-          });
+        onInvoicesChange(getStoredInvoices());
+        onSettingsChange(getAppSettings());
+        setNotification({
+          type: 'success',
+          message: res.message,
         });
       } else {
         setNotification({

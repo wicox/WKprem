@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RawInvoiceInput, StoredInvoice } from '../types/bonus';
 import { parseExcelPaste } from '../services/excelService';
+import { importInvoicesToDb } from '../services/storageService';
 import { getPersonColor, formatCurrency } from '../utils/colors';
 import {
   ClipboardPaste,
@@ -123,30 +124,28 @@ export const RawDataImport: React.FC<RawDataImportProps> = ({
       return;
     }
 
-    import('../services/storageService').then(({ importInvoicesToDb }) => {
-      const result = importInvoicesToDb(parsedItems, existingInvoices);
-      onImportSuccess(result.addedCount, result.duplicateCount);
+    const result = importInvoicesToDb(parsedItems, existingInvoices);
+    onImportSuccess(result.addedCount, result.duplicateCount);
 
-      if (result.duplicateCount > 0) {
-        setImportNotification({
-          type: 'warning',
-          message: `Przeniesiono ${result.addedCount} nowych faktur. Pominięto ${result.duplicateCount} duplikatów: (${result.duplicateNumbers.join(', ')}) oraz ${result.skippedBlockedCount} zablokowanych.`,
-        });
-      } else {
-        setImportNotification({
-          type: 'success',
-          message: `Sukces! Pomyślnie przeniesiono ${result.addedCount} faktur do Bazy Danych.`,
-        });
-      }
+    if (result.duplicateCount > 0) {
+      setImportNotification({
+        type: 'warning',
+        message: `Przeniesiono ${result.addedCount} nowych faktur. Pominięto ${result.duplicateCount} duplikatów: (${result.duplicateNumbers.join(', ')}) oraz ${result.skippedBlockedCount} zablokowanych.`,
+      });
+    } else {
+      setImportNotification({
+        type: 'success',
+        message: `Sukces! Pomyślnie przeniesiono ${result.addedCount} faktur do Bazy Danych.`,
+      });
+    }
 
-      // Keep only blocked items or clear
-      if (result.skippedBlockedCount > 0) {
-        setParsedItems((prev) => prev.filter((i) => i.isBlocked));
-      } else {
-        setParsedItems([]);
-        setPasteText('');
-      }
-    });
+    // Keep only blocked items or clear
+    if (result.skippedBlockedCount > 0) {
+      setParsedItems((prev) => prev.filter((i) => i.isBlocked));
+    } else {
+      setParsedItems([]);
+      setPasteText('');
+    }
   };
 
   return (
