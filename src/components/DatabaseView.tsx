@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { StoredInvoice, InvoiceStatus, AppSettings, DatabaseFilters } from '../types/bonus';
+import { StoredInvoice, InvoiceStatus, AppSettings, DatabaseFilters, Currency } from '../types/bonus';
 import { getPersonColor, formatCurrency, formatMonthName, formatRate } from '../utils/colors';
 import { getEurExchangeRateForDate, getEurRateForEndOfMonth } from '../services/nbpService';
 import { saveStoredInvoices, saveAppSettings } from '../services/storageService';
@@ -23,6 +23,10 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Save,
+  Check,
+  FileEdit,
+  DollarSign,
 } from 'lucide-react';
 
 interface DatabaseViewProps {
@@ -65,6 +69,30 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
   const [editingRateId, setEditingRateId] = useState<string | null>(null);
   const [customRateInput, setCustomRateInput] = useState<string>('');
 
+  // Editing state for full record edit modal
+  const [editingInvoice, setEditingInvoice] = useState<StoredInvoice | null>(null);
+  const [editForm, setEditForm] = useState<{
+    nrFaktury: string;
+    projekt: string;
+    dataFaktury: string;
+    netto: string;
+    waluta: Currency;
+    kursEurPln: string;
+    prowadzacy: string;
+    miesiacRozliczeniowy: string;
+  }>({
+    nrFaktury: '',
+    projekt: '',
+    dataFaktury: '',
+    netto: '',
+    waluta: 'EUR',
+    kursEurPln: '4.3128',
+    prowadzacy: '',
+    miesiacRozliczeniowy: '',
+  });
+
+  const [isFetchingEditNbp, setIsFetchingEditNbp] = useState(false);
+
   // Auto-allocate algorithm state
   const [targetAmountInput, setTargetAmountInput] = useState<string>('200000');
   const [targetMonthSelect, setTargetMonthSelect] = useState<string>(settings.activeMonth || '2026-08');
@@ -101,6 +129,107 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     }
     setIsNewMonthModalOpen(false);
   };
+
+  // Open Edit Modal for a given invoice
+  const handleOpenEdit = (inv: StoredInvoice) => {
+    if (inv.status === 'ROZLICZONA') {
+      alert('Ta faktura jest ROZLICZONA i nie może być modyfikowana. Aby ją edytować, wejdź w Kartę Premii i cofnij do statusu Zarezerwowana.');
+      return;
+    }
+    setEditingInvoice(inv);
+    setEditForm({
+      nrFaktury: inv.nrFaktury,
+      projekt: inv.projekt,
+      dataFaktury: inv.dataFaktury,
+      netto: String(inv.netto).replace('.', ','),
+      waluta: inv.waluta,
+      kursEurPln: String(inv.kursEurPln || 4.3128).replace('.', ','),
+      prowadzacy: inv.prowadzacy,
+      miesiacRozliczeniowy: inv.miesiacRozliczeniowy || '',
+    });
+  };
+
+  // Fetch NBP rate for the date in edit form
+  const handleFetchEditNbpRate = async () => {
+    if (!editForm.dataFaktury) return;
+    setIsFetchingEditNbp(true);
+    try {
+      const res = await getEurExchangeRateForDate(editForm.dataFaktury);
+      setEditForm((prev) => ({
+        ...prev,
+        kursEurPln: String(res.rate).replace('.', ','),
+      }));
+      setFeedbackMessage(`Pobrano kurs z NBP z dnia ${res.effectiveDate}: 1 EUR = ${formatRate(res.rate)} zł (${res.tableNo})`);
+      setTimeout(() => setFeedbackMessage(null), 4000);
+    } catch (err) {
+      console.error('Failed to fetch NBP rate', err);
+      alert('Nie udało się pobrać kursu NBP dla podanej daty.');
+    } finally {
+      setIsFetchingEditNbp(false);
+    }
+  };
+
+  // Save changes from Edit Modal
+  const handleSaveEdit = () => {
+    if (!editingInvoice) return;
+    const cleanNr = editForm.nrFaktury.trim();
+    if (!cleanNr) {
+      alert('Numer faktury nie może być pusty!');
+      return;
+    }
+    const cleanNetto = parseFloat(editForm.netto.replace(/\s+/g, '').replace(',', '.'));
+    if (isNaN(cleanNetto) || cleanNetto < 0) {
+      alert('Wpisz poprawną kwotę netto!');
+      return;
+    }
+
+    const cleanKurs = editForm.waluta === 'EUR'
+      ? parseFloat(editForm.kursEurPln.replace(/\s+/g, '').replace(',', '.')) || 4.3128
+      : 1.0;
+
+    const kwotaPln = editForm.waluta === 'EUR'
+      ? Math.round(cleanNetto * cleanKurs * 100) / 100
+      : cleanNetto;
+
+    const updatedMonth = editForm.miesiacRozliczeniowy;
+    const updatedStatus: InvoiceStatus = editingInvoice.status === 'ROZLICZONA'
+      ? 'ROZLICZONA'
+      : (updatedMonth ? 'ZAREZERWOWANA' : 'WOLNA');
+
+    const updatedInvoices = invoices.map((inv) => {
+      if (inv.id === editingInvoice.id) {
+        return {
+          ...inv,
+          nrFaktury: cleanNr,
+          projekt: editForm.projekt.trim(),
+          dataFaktury: editForm.dataFaktury.trim(),
+          netto: cleanNetto,
+          waluta: editForm.waluta,
+          kursEurPln: cleanKurs,
+          kwotaPln,
+          prowadzacy: editForm.prowadzacy.trim() || 'Jan Kowalski',
+          miesiacRozliczeniowy: updatedMonth,
+          status: updatedStatus,
+        };
+      }
+      return inv;
+    });
+
+    onInvoicesChange(updatedInvoices);
+    saveStoredInvoices(updatedInvoices);
+    setEditingInvoice(null);
+    setFeedbackMessage(`Pomyślnie zaktualizowano fakturę ${cleanNr}!`);
+    setTimeout(() => setFeedbackMessage(null), 4000);
+  };
+
+  // Computed live PLN preview in edit form
+  const editPreviewPln = useMemo(() => {
+    const cleanNetto = parseFloat(editForm.netto.replace(/\s+/g, '').replace(',', '.'));
+    if (isNaN(cleanNetto) || cleanNetto < 0) return 0;
+    if (editForm.waluta === 'PLN') return cleanNetto;
+    const cleanKurs = parseFloat(editForm.kursEurPln.replace(/\s+/g, '').replace(',', '.')) || 4.3128;
+    return Math.round(cleanNetto * cleanKurs * 100) / 100;
+  }, [editForm.netto, editForm.kursEurPln, editForm.waluta]);
 
   // Toggle column sorting
   const handleHeaderSort = (field: string) => {
@@ -378,28 +507,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
     }
   };
 
-  const handleSaveCustomRate = (id: string) => {
-    const parsed = parseFloat(customRateInput.replace(',', '.'));
-    if (!isNaN(parsed) && parsed > 0) {
-      const updated = invoices.map((inv) => {
-        if (inv.id === id) {
-          const kwotaPln = inv.waluta === 'EUR' ? Math.round(inv.netto * parsed * 100) / 100 : inv.netto;
-          return {
-            ...inv,
-            kursEurPln: parsed,
-            kwotaPln,
-            nrTabeliNbp: 'Ręczna korekta',
-          };
-        }
-        return inv;
-      });
-      onInvoicesChange(updated);
-      saveStoredInvoices(updated);
-    }
-    setEditingRateId(null);
-  };
-
-  // Exact Monetary Summary Statistics (Amounts only, no counts)
+  // Exact Monetary Summary Statistics
   const stats = useMemo(() => {
     let sumWolnePln = 0;
     let sumZarezerwowanePln = 0;
@@ -452,13 +560,13 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           <div>
             <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 mb-2">
               <Database className="w-3.5 h-3.5" />
-              Krok 2: Baza danych i historia faktur
+              Krok 2: Baza danych i edycja faktur
             </div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
               Baza Faktur i Przypisania Miesięcy
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
-              Zakres miesięcy i filtry są <strong>automatycznie zapamiętywane</strong> po przechodzeniu między zakładkami. Kliknij nagłówek kolumny, aby posortować rekordy.
+              Możesz edytować dowolne pole faktury: <strong>Nr faktury</strong>, <strong>Projekt</strong>, <strong>Datę wystawienia</strong>, <strong>Kwotę Netto</strong>, <strong>Kurs EUR</strong> oraz <strong>Prowadzącego</strong>. Kliknij ikonę ołówka przy wierszu.
             </p>
           </div>
 
@@ -574,7 +682,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
               type="text"
               value={filters.searchTerm}
               onChange={(e) => updateFilters({ searchTerm: e.target.value })}
-              placeholder="Szukaj po nr faktury, projekcie..."
+              placeholder="Szukaj po nr faktury, projekcie, nazwisku..."
               className="w-full text-xs pl-9 pr-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -700,7 +808,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
         </div>
       )}
 
-      {/* Main Database Table with Clickable Sort Headers */}
+      {/* Main Database Table with Clickable Sort Headers and Edit Buttons */}
       <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm border-collapse">
@@ -720,11 +828,17 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-3 w-10 text-center">Blokada</th>
+                <th className="py-3 px-2 w-8 text-center" title="Edycja rekordu">
+                  Edycja
+                </th>
+                <th className="py-3 px-2 w-8 text-center" title="Blokada faktury">
+                  Blokada
+                </th>
 
                 <th
                   onClick={() => handleHeaderSort('nrFaktury')}
                   className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po numerze faktury"
                 >
                   Nr Faktury {renderSortIndicator('nrFaktury')}
                 </th>
@@ -732,6 +846,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <th
                   onClick={() => handleHeaderSort('projekt')}
                   className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po projekcie"
                 >
                   Projekt {renderSortIndicator('projekt')}
                 </th>
@@ -739,13 +854,15 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <th
                   onClick={() => handleHeaderSort('dataFaktury')}
                   className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po dacie wystawienia"
                 >
                   Data wystawienia {renderSortIndicator('dataFaktury')}
                 </th>
 
                 <th
                   onClick={() => handleHeaderSort('miesiacRozliczeniowy')}
-                  className="py-3 px-3 text-center min-w-[150px] cursor-pointer hover:text-blue-600 transition"
+                  className="py-3 px-3 text-center min-w-[140px] cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po miesiącu rozliczeniowym"
                 >
                   Miesiąc {renderSortIndicator('miesiacRozliczeniowy')}
                 </th>
@@ -753,6 +870,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <th
                   onClick={() => handleHeaderSort('netto')}
                   className="py-3 px-3 text-right cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po kwocie netto"
                 >
                   Netto {renderSortIndicator('netto')}
                 </th>
@@ -760,6 +878,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <th
                   onClick={() => handleHeaderSort('kursEurPln')}
                   className="py-3 px-3 text-center cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po kursie euro"
                 >
                   Kurs EUR {renderSortIndicator('kursEurPln')}
                 </th>
@@ -767,6 +886,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <th
                   onClick={() => handleHeaderSort('kwotaPln')}
                   className="py-3 px-3 text-right font-bold text-slate-800 dark:text-slate-200 cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po przeliczonej kwocie PLN"
                 >
                   Przeliczone PLN {renderSortIndicator('kwotaPln')}
                 </th>
@@ -774,6 +894,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <th
                   onClick={() => handleHeaderSort('status')}
                   className="py-3 px-3 text-center cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po statusie"
                 >
                   Status {renderSortIndicator('status')}
                 </th>
@@ -781,6 +902,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <th
                   onClick={() => handleHeaderSort('prowadzacy')}
                   className="py-3 px-3 cursor-pointer hover:text-blue-600 transition"
+                  title="Kliknij, aby posortować po prowadzącym"
                 >
                   Prowadzący {renderSortIndicator('prowadzacy')}
                 </th>
@@ -789,7 +911,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {filteredAndSortedInvoices.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center text-slate-500">
+                  <td colSpan={12} className="py-12 text-center text-slate-500">
                     Brak faktur spełniających wybrane kryteria zakresu.
                   </td>
                 </tr>
@@ -803,7 +925,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                   return (
                     <tr
                       key={inv.id}
-                      className={`transition-colors ${
+                      className={`transition-colors group ${
                         inv.isBlocked
                           ? 'bg-red-50/70 dark:bg-red-950/30 text-red-900 dark:text-red-200 border-l-4 border-l-red-500'
                           : isSettled
@@ -814,7 +936,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                       }`}
                     >
                       {/* Checkbox (disabled if settled) */}
-                      <td className="py-2.5 px-3 text-center">
+                      <td className="py-2 px-3 text-center">
                         <input
                           type="checkbox"
                           disabled={isSettled}
@@ -827,8 +949,29 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         />
                       </td>
 
+                      {/* Edit Button (Pencil) */}
+                      <td className="py-2 px-1 text-center">
+                        <button
+                          type="button"
+                          disabled={isSettled}
+                          onClick={() => handleOpenEdit(inv)}
+                          title={
+                            isSettled
+                              ? 'Faktura jest rozliczona. Aby edytować, cofnij rozliczenie w Karcie Premii.'
+                              : 'Edytuj pola rekordu (Nr faktury, Projekt, Data, Netto, Kurs, Prowadzący)'
+                          }
+                          className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
+                            isSettled
+                              ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed opacity-40'
+                              : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/50'
+                          }`}
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+
                       {/* Lock (disabled if settled) */}
-                      <td className="py-2.5 px-3 text-center">
+                      <td className="py-2 px-1 text-center">
                         <button
                           type="button"
                           disabled={isSettled}
@@ -842,7 +985,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                           }
                           className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
                             isSettled
-                              ? 'bg-slate-100 text-slate-400 opacity-60 cursor-not-allowed'
+                              ? 'bg-slate-100 text-slate-400 opacity-40 cursor-not-allowed'
                               : inv.isBlocked
                               ? 'bg-red-600 text-white hover:bg-red-700'
                               : 'bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-red-600 hover:bg-red-50'
@@ -856,23 +999,37 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         </button>
                       </td>
 
-                      {/* Nr Faktury */}
-                      <td className="py-2.5 px-3 font-mono font-medium text-xs">
-                        {inv.nrFaktury}
+                      {/* Nr Faktury (Click to edit) */}
+                      <td
+                        className="py-2 px-3 font-mono font-medium text-xs cursor-pointer hover:text-blue-600"
+                        onClick={() => !isSettled && handleOpenEdit(inv)}
+                        title={!isSettled ? 'Kliknij, aby edytować rekord' : undefined}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          {inv.nrFaktury}
+                        </span>
                       </td>
 
                       {/* Projekt */}
-                      <td className="py-2.5 px-3 font-medium text-slate-700 dark:text-slate-300 text-xs">
+                      <td
+                        className="py-2 px-3 font-medium text-slate-700 dark:text-slate-300 text-xs cursor-pointer hover:text-blue-600"
+                        onClick={() => !isSettled && handleOpenEdit(inv)}
+                        title={!isSettled ? 'Kliknij, aby edytować rekord' : undefined}
+                      >
                         {inv.projekt}
                       </td>
 
                       {/* Data wystawienia faktury */}
-                      <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400 text-xs font-mono">
+                      <td
+                        className="py-2 px-3 text-slate-600 dark:text-slate-400 text-xs font-mono cursor-pointer hover:text-blue-600"
+                        onClick={() => !isSettled && handleOpenEdit(inv)}
+                        title={!isSettled ? 'Kliknij, aby edytować rekord' : undefined}
+                      >
                         {inv.dataFaktury}
                       </td>
 
-                      {/* Editable Miesiąc Rozliczeniowy (Locked if settled) */}
-                      <td className="py-2.5 px-3 text-center">
+                      {/* Editable Miesiąc Rozliczeniowy */}
+                      <td className="py-2 px-3 text-center">
                         {isSettled ? (
                           <div
                             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300 cursor-not-allowed"
@@ -902,68 +1059,49 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         )}
                       </td>
 
-                      {/* Kwota Netto */}
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-xs">
+                      {/* Kwota Netto (Click to edit) */}
+                      <td
+                        className="py-2 px-3 text-right font-mono font-semibold text-xs cursor-pointer hover:text-blue-600"
+                        onClick={() => !isSettled && handleOpenEdit(inv)}
+                        title={!isSettled ? 'Kliknij, aby edytować kwotę netto' : undefined}
+                      >
                         {formatCurrency(inv.netto, inv.waluta)}
                       </td>
 
                       {/* Kurs EUR */}
-                      <td className="py-2.5 px-3 text-center">
+                      <td className="py-2 px-3 text-center">
                         {isEur ? (
-                          editingRateId === inv.id ? (
-                            <div className="flex items-center justify-center gap-1">
-                              <input
-                                type="text"
-                                value={customRateInput}
-                                onChange={(e) => setCustomRateInput(e.target.value)}
-                                className="w-16 text-center text-xs p-1 rounded border border-blue-400 bg-white dark:bg-slate-900 font-mono"
-                                autoFocus
-                              />
-                              <button
-                                onClick={() => handleSaveCustomRate(inv.id)}
-                                className="px-1.5 py-1 text-[10px] bg-emerald-600 text-white rounded font-bold"
-                              >
-                                OK
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="inline-flex items-center gap-1 group">
-                              <span
-                                className="font-mono text-xs px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 font-medium"
-                                title={
-                                  settings.useEndOfMonthRate
-                                    ? `Kurs końca miesiąca: ${inv.nrTabeliNbp || 'Tabela A NBP'}`
-                                    : `Kurs NBP z dnia ${inv.dataKursuNbp || inv.dataFaktury} (${inv.nrTabeliNbp || 'Tabela A'})`
-                                }
-                              >
-                                {inv.kursEurPln ? formatRate(inv.kursEurPln) : '4,3128'}
-                              </span>
-                              {!isSettled && (
-                                <button
-                                  onClick={() => {
-                                    setEditingRateId(inv.id);
-                                    setCustomRateInput(String(inv.kursEurPln || 4.3128));
-                                  }}
-                                  className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-blue-600 transition"
-                                  title="Ręczna edycja kursu"
-                                >
-                                  <Edit2 className="w-3 h-3" />
-                                </button>
-                              )}
-                            </div>
-                          )
+                          <div
+                            onClick={() => !isSettled && handleOpenEdit(inv)}
+                            className={`inline-flex items-center gap-1 cursor-pointer ${!isSettled ? 'hover:opacity-80' : ''}`}
+                            title={!isSettled ? 'Kliknij, aby edytować kurs' : undefined}
+                          >
+                            <span
+                              className="font-mono text-xs px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 font-medium"
+                              title={
+                                settings.useEndOfMonthRate
+                                  ? `Kurs końca miesiąca: ${inv.nrTabeliNbp || 'Tabela A NBP'}`
+                                  : `Kurs NBP z dnia ${inv.dataKursuNbp || inv.dataFaktury} (${inv.nrTabeliNbp || 'Tabela A'})`
+                              }
+                            >
+                              {inv.kursEurPln ? formatRate(inv.kursEurPln) : '4,3128'}
+                            </span>
+                            {!isSettled && (
+                              <Edit2 className="w-3 h-3 text-slate-400 opacity-0 group-hover:opacity-100 transition" />
+                            )}
+                          </div>
                         ) : (
                           <span className="text-[11px] text-slate-400 font-mono">1,0000 (PLN)</span>
                         )}
                       </td>
 
                       {/* Przeliczone PLN */}
-                      <td className="py-2.5 px-3 text-right font-mono font-bold text-xs text-blue-900 dark:text-blue-300">
+                      <td className="py-2 px-3 text-right font-mono font-bold text-xs text-blue-900 dark:text-blue-300">
                         {formatCurrency(inv.kwotaPln, 'PLN')}
                       </td>
 
                       {/* Status */}
-                      <td className="py-2.5 px-3 text-center">
+                      <td className="py-2 px-3 text-center">
                         {inv.status === 'ROZLICZONA' ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
                             <CheckCircle className="w-3 h-3" />
@@ -981,8 +1119,12 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         )}
                       </td>
 
-                      {/* Prowadzący */}
-                      <td className="py-2.5 px-3">
+                      {/* Prowadzący (Click to edit) */}
+                      <td
+                        className="py-2 px-3 cursor-pointer"
+                        onClick={() => !isSettled && handleOpenEdit(inv)}
+                        title={!isSettled ? 'Kliknij, aby edytować prowadzącego' : undefined}
+                      >
                         <span
                           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${personColor.bg} ${personColor.text} ${personColor.border}`}
                         >
@@ -998,6 +1140,199 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Modal: Edycja rekordu faktury */}
+      {editingInvoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-fadeIn">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 sm:p-7 max-w-lg w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2 text-blue-600">
+                <FileEdit className="w-5 h-5" />
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                  Edycja faktury: <span className="font-mono text-blue-600">{editingInvoice.nrFaktury}</span>
+                </h3>
+              </div>
+              <button
+                onClick={() => setEditingInvoice(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+              {/* Nr Faktury */}
+              <div className="space-y-1">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Numer Faktury
+                </label>
+                <input
+                  type="text"
+                  value={editForm.nrFaktury}
+                  onChange={(e) => setEditForm({ ...editForm, nrFaktury: e.target.value })}
+                  placeholder="np. FW 2/26/042"
+                  className="w-full font-mono text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  autoFocus
+                />
+              </div>
+
+              {/* Projekt */}
+              <div className="space-y-1">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Projekt
+                </label>
+                <input
+                  type="text"
+                  value={editForm.projekt}
+                  onChange={(e) => setEditForm({ ...editForm, projekt: e.target.value })}
+                  placeholder="np. P/757/31"
+                  className="w-full text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              {/* Data wystawienia */}
+              <div className="space-y-1">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Data wystawienia
+                </label>
+                <input
+                  type="date"
+                  value={editForm.dataFaktury}
+                  onChange={(e) => setEditForm({ ...editForm, dataFaktury: e.target.value })}
+                  className="w-full text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              {/* Prowadzący */}
+              <div className="space-y-1">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Prowadzący
+                </label>
+                <input
+                  type="text"
+                  value={editForm.prowadzacy}
+                  onChange={(e) => setEditForm({ ...editForm, prowadzacy: e.target.value })}
+                  placeholder="np. Jan Kowalski"
+                  className="w-full text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              {/* Kwota Netto & Waluta */}
+              <div className="space-y-1">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Kwota Netto
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={editForm.netto}
+                    onChange={(e) => setEditForm({ ...editForm, netto: e.target.value })}
+                    placeholder="np. 5165,10"
+                    className="w-full font-mono text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  <select
+                    value={editForm.waluta}
+                    onChange={(e) => setEditForm({ ...editForm, waluta: e.target.value as Currency })}
+                    className="font-bold text-xs p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer"
+                  >
+                    <option value="EUR">EUR (€)</option>
+                    <option value="PLN">PLN (zł)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Kurs EUR */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                    Kurs EUR (NBP)
+                  </label>
+                  {editForm.waluta === 'EUR' && (
+                    <button
+                      type="button"
+                      onClick={handleFetchEditNbpRate}
+                      disabled={isFetchingEditNbp || !editForm.dataFaktury}
+                      className="text-[11px] text-blue-600 hover:text-blue-800 font-semibold flex items-center gap-1"
+                      title="Pobierz oficjalny kurs NBP dla wpisanej daty wystawienia"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isFetchingEditNbp ? 'animate-spin' : ''}`} />
+                      {isFetchingEditNbp ? 'Pobieram...' : 'Pobierz z NBP'}
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  disabled={editForm.waluta === 'PLN'}
+                  value={editForm.waluta === 'PLN' ? '1,0000' : editForm.kursEurPln}
+                  onChange={(e) => setEditForm({ ...editForm, kursEurPln: e.target.value })}
+                  placeholder="np. 4,3128"
+                  className={`w-full font-mono text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none ${
+                    editForm.waluta === 'PLN' ? 'opacity-50 cursor-not-allowed bg-slate-100 dark:bg-slate-900' : ''
+                  }`}
+                />
+              </div>
+
+              {/* Miesiąc Rozliczeniowy */}
+              <div className="sm:col-span-2 space-y-1">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Miesiąc Rozliczeniowy
+                </label>
+                <select
+                  value={editForm.miesiacRozliczeniowy}
+                  onChange={(e) => setEditForm({ ...editForm, miesiacRozliczeniowy: e.target.value })}
+                  className="w-full text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">— Wolna (brak przypisanego miesiąca) —</option>
+                  {availableMonths.map((m) => (
+                    <option key={m} value={m}>
+                      {formatMonthName(m)} ({m})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Dynamic Calculation Preview Banner */}
+            <div className="p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 flex items-center justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-blue-900 dark:text-blue-200 uppercase tracking-wider block">
+                  Przeliczona wartość w PLN:
+                </span>
+                <span className="text-lg font-mono font-extrabold text-blue-900 dark:text-blue-100">
+                  {formatCurrency(editPreviewPln, 'PLN')}
+                </span>
+              </div>
+              <div className="text-right">
+                <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 block">
+                  Premia 1%:
+                </span>
+                <span className="text-sm font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  {formatCurrency(Math.round(editPreviewPln * 0.01 * 100) / 100, 'PLN')}
+                </span>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingInvoice(null)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                Anuluj
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdit}
+                className="inline-flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition"
+              >
+                <Save className="w-4 h-4" />
+                Zapisz zmiany
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal: Stwórz nowy miesiąc */}
       {isNewMonthModalOpen && (
