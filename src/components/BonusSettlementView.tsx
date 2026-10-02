@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { StoredInvoice, AppSettings } from '../types/bonus';
-import { formatCurrency, formatMonthName, formatRate } from '../utils/colors';
+import { formatCurrency, formatMonthName, formatRate, getPersonColor } from '../utils/colors';
 import { exportSettlementToExcel, exportSettlementToHtmlFile } from '../services/excelService';
 import { downloadElementAsJpg, downloadElementAsPdf } from '../services/exportService';
 import { getEurExchangeRateForDate } from '../services/nbpService';
@@ -19,6 +19,8 @@ import {
   Code,
   Sparkles,
   RefreshCw,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 
 interface BonusSettlementViewProps {
@@ -78,14 +80,44 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     return Array.from(new Set(list)).sort().reverse();
   }, [invoices, settings.customMonths]);
 
-  // All unblocked invoices assigned to this settlement month
+  // All unblocked invoices assigned to this settlement month, sorted by custom orderIndex
   const eligibleInvoices = useMemo(() => {
-    return invoices.filter(
+    const list = invoices.filter(
       (inv) => inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked
     );
+    return list.sort((a, b) => {
+      const orderA = a.orderIndex !== undefined ? a.orderIndex : 0;
+      const orderB = b.orderIndex !== undefined ? b.orderIndex : 0;
+      return orderA - orderB;
+    });
   }, [invoices, currentMonth]);
 
   const allSettled = eligibleInvoices.length > 0 && eligibleInvoices.every((i) => i.status === 'ROZLICZONA');
+
+  // Reorder invoices within the settlement card
+  const handleMoveRow = (index: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= eligibleInvoices.length) return;
+
+    const reordered = [...eligibleInvoices];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(targetIndex, 0, moved);
+
+    const idToOrder = new Map<string, number>();
+    reordered.forEach((inv, idx) => {
+      idToOrder.set(inv.id, idx + 1);
+    });
+
+    const updated = invoices.map((inv) => {
+      if (idToOrder.has(inv.id)) {
+        return { ...inv, orderIndex: idToOrder.get(inv.id) };
+      }
+      return inv;
+    });
+
+    onInvoicesChange(updated);
+    saveStoredInvoices(updated);
+  };
 
   // Active rate for month
   const activeMonthRate = useMemo(() => {
@@ -264,7 +296,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     setTimeout(() => setNotification(null), 5000);
   };
 
-  // Export to Excel (Styled 01.jpg layout)
+  // Export to Excel (Styled 01.jpg layout - excludes preview column)
   const handleExportExcel = () => {
     const monthFormatted = formatMonthName(currentMonth);
     const tableText = `Tabela nr ${activeMonthRate.tableNo} z dnia ${activeMonthRate.date}`;
@@ -283,7 +315,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     );
   };
 
-  // Export to standalone HTML
+  // Export to standalone HTML (excludes preview column)
   const handleExportHtml = () => {
     const monthFormatted = formatMonthName(currentMonth);
     const tableText = `Tabela nr ${activeMonthRate.tableNo} z dnia ${activeMonthRate.date}`;
@@ -299,7 +331,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     );
   };
 
-  // Export to PDF
+  // Export to PDF (excludes preview column via export-exclude class)
   const handleExportPdf = async () => {
     if (!printRef.current) return;
     setIsExporting(true);
@@ -318,7 +350,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
     }
   };
 
-  // Export to JPG
+  // Export to JPG (excludes preview column via export-exclude class)
   const handleExportJpg = async () => {
     if (!printRef.current) return;
     setIsExporting(true);
@@ -387,7 +419,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
               )}
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Wydruk i eksporty (PDF, JPG, HTML, Excel) dokładnie odzwierciedlają format Karty Premii.
+              Możesz przesuwać pozycje strzałkami w górę i w dół. Kolumna „Imię Nazwisko” służy <strong>wyłącznie do podglądu na ekranie</strong> i nie drukuje się ani nie eksportuje.
             </p>
           </div>
 
@@ -566,7 +598,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
       <div className="flex justify-center">
         <div
           ref={printRef}
-          className="a4-print-sheet w-full max-w-[820px] bg-white text-black p-6 sm:p-10 shadow-md rounded-lg border border-slate-200 font-sans print:border-none print:shadow-none print:p-0 print:m-0"
+          className="a4-print-sheet w-full max-w-[880px] bg-white text-black p-6 sm:p-10 shadow-md rounded-lg border border-slate-200 font-sans print:border-none print:shadow-none print:p-0 print:m-0"
         >
           {/* Header matching 01.jpg */}
           <div className="text-center mb-4">
@@ -575,12 +607,12 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
             </h2>
           </div>
 
-          {/* Main Table: Always showing Kurs EUR and Kwota w PLN */}
+          {/* Main Table: Always showing Kurs EUR and Kwota w PLN + Preview Person column (screen only) */}
           <div className="overflow-x-auto">
             <table className="w-full border-collapse border-2 border-black">
               <thead>
                 <tr className="border-b-2 border-black bg-slate-50 font-bold text-center">
-                  <th className="border border-black py-1.5 px-2 w-10 text-center font-bold">
+                  <th className="border border-black py-1.5 px-2 w-12 text-center font-bold">
                     Lp.
                   </th>
                   <th className="border border-black py-1.5 px-3 text-center font-bold">
@@ -601,13 +633,17 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                   <th className="border border-black py-1.5 px-3 text-center font-bold">
                     Kwota w PLN
                   </th>
+                  {/* On-screen preview only: Imię Nazwisko (never printed or exported) */}
+                  <th className="border border-black py-1.5 px-3 text-center font-bold bg-amber-50/80 text-amber-900 print:hidden export-exclude text-[11px] whitespace-nowrap">
+                    Prowadzący (podgląd)
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {eligibleInvoices.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={7}
+                      colSpan={8}
                       className="border border-black py-8 text-center text-slate-500 italic"
                     >
                       Brak przypisanych faktur do miesiąca {monthLabel}.
@@ -615,16 +651,41 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                   </tr>
                 ) : (
                   eligibleInvoices.map((inv, idx) => {
+                    const personColor = getPersonColor(inv.prowadzacy);
                     const rowRate = inv.waluta === 'EUR'
                       ? (settings.useEndOfMonthRate ? activeMonthRate.rate : (inv.kursEurPln || activeMonthRate.rate))
                       : 1.0;
                     const rowPln = inv.waluta === 'EUR' ? inv.netto * rowRate : inv.netto;
 
                     return (
-                      <tr key={inv.id} className="border-b border-black hover:bg-slate-50/50">
+                      <tr key={inv.id} className="border-b border-black hover:bg-slate-50/50 group">
+                        {/* Lp. with Reorder Up / Down buttons on screen */}
                         <td className={`border border-black text-center font-mono ${rowDensityClass}`}>
-                          {idx + 1}
+                          <div className="flex items-center justify-center gap-1">
+                            <span className="min-w-[14px]">{idx + 1}</span>
+                            <div className="flex flex-col ml-0.5 print:hidden export-exclude opacity-40 group-hover:opacity-100 transition">
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={() => handleMoveRow(idx, 'up')}
+                                className="p-0 text-slate-500 hover:text-blue-600 disabled:opacity-15 transition"
+                                title="Przesuń pozycję w górę"
+                              >
+                                <ChevronUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === eligibleInvoices.length - 1}
+                                onClick={() => handleMoveRow(idx, 'down')}
+                                className="p-0 text-slate-500 hover:text-blue-600 disabled:opacity-15 transition"
+                                title="Przesuń pozycję w dół"
+                              >
+                                <ChevronDown className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
                         </td>
+
                         <td className={`border border-black font-medium ${rowDensityClass}`}>
                           {inv.projekt}
                         </td>
@@ -643,6 +704,16 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                         <td className={`border border-black text-right font-mono font-bold ${rowDensityClass}`}>
                           {formatCurrency(rowPln, 'PLN')}
                         </td>
+
+                        {/* On-screen preview only: Imię Nazwisko */}
+                        <td className={`border border-black text-center print:hidden export-exclude ${rowDensityClass}`}>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${personColor.bg} ${personColor.text} ${personColor.border}`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${personColor.dot}`} />
+                            {inv.prowadzacy}
+                          </span>
+                        </td>
                       </tr>
                     );
                   })
@@ -658,6 +729,7 @@ export const BonusSettlementView: React.FC<BonusSettlementViewProps> = ({
                   <td className="border border-black py-2 px-3 text-right font-mono font-bold bg-slate-50 text-xs sm:text-sm">
                     {formatCurrency(calculations.totalConvertedPln, 'PLN')}
                   </td>
+                  <td className="border border-black print:hidden export-exclude"></td>
                 </tr>
               </tbody>
             </table>

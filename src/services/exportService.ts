@@ -14,6 +14,9 @@ export async function renderElementToCanvas(element: HTMLElement, scale: number 
   // Clone element to sanitize and inline styles
   const clone = element.cloneNode(true) as HTMLElement;
 
+  // Remove preview-only elements (e.g. preview person column, reordering buttons)
+  clone.querySelectorAll('.export-exclude, .print\\:hidden').forEach((el) => el.remove());
+
   // Inline basic colors so foreignObject renders reliably without external CSS
   clone.style.width = `${width}px`;
   clone.style.backgroundColor = '#ffffff';

@@ -919,6 +919,20 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 filteredAndSortedInvoices.map((inv) => {
                   const personColor = getPersonColor(inv.prowadzacy);
                   const monthColor = getMonthColor(inv.miesiacRozliczeniowy);
+
+                  // Extract month from issue date to give distinctive background per month
+                  const issueMonthStr = (() => {
+                    if (!inv.dataFaktury) return '';
+                    const cleaned = inv.dataFaktury.replace(/\./g, '-');
+                    const parts = cleaned.split('-');
+                    if (parts.length === 3) {
+                      if (parts[0].length === 4) return `${parts[0]}-${parts[1].padStart(2, '0')}`;
+                      if (parts[2].length === 4) return `${parts[2]}-${parts[1].padStart(2, '0')}`;
+                    }
+                    return inv.dataFaktury.substring(0, 7);
+                  })();
+                  const issueDateColor = getMonthColor(issueMonthStr);
+
                   const isEur = inv.waluta === 'EUR';
                   const isSettled = inv.status === 'ROZLICZONA';
                   const isSelected = selectedIds.has(inv.id);
@@ -1020,13 +1034,18 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                         {inv.projekt}
                       </td>
 
-                      {/* Data wystawienia faktury */}
+                      {/* Data wystawienia faktury with month-based background color */}
                       <td
-                        className="py-2 px-3 text-slate-600 dark:text-slate-400 text-xs font-mono cursor-pointer hover:text-blue-600"
+                        className="py-2 px-3 text-xs font-mono cursor-pointer"
                         onClick={() => !isSettled && handleOpenEdit(inv)}
                         title={!isSettled ? 'Kliknij, aby edytować rekord' : undefined}
                       >
-                        {inv.dataFaktury}
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-md font-semibold border shadow-2xs ${issueDateColor.bg} ${issueDateColor.text} ${issueDateColor.border}`}
+                          title={`Data wystawienia: ${inv.dataFaktury} (${formatMonthName(issueMonthStr)})`}
+                        >
+                          {inv.dataFaktury}
+                        </span>
                       </td>
 
                       {/* Editable Miesiąc Rozliczeniowy */}

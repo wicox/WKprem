@@ -30,6 +30,7 @@ export interface StoredInvoice {
   dataKursuNbp?: string; // publication date
   kwotaPln: number; // PLN equivalent
   rozliczonaWId?: string; // e.g. "2026-07"
+  orderIndex?: number; // Custom position order in settlement cards
   dataDodania: string; // ISO timestamp
 }
 

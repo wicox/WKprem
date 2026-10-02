@@ -43,11 +43,16 @@ export const ProjectAllocationView: React.FC<ProjectAllocationViewProps> = ({
     return Array.from(new Set(list)).sort().reverse();
   }, [invoices, settings.customMonths]);
 
-  // All eligible invoices in this month
+  // All eligible invoices in this month, sorted identically to Karta Premii
   const eligibleInvoices = useMemo(() => {
-    return invoices.filter(
+    const list = invoices.filter(
       (inv) => inv.miesiacRozliczeniowy === currentMonth && !inv.isBlocked
     );
+    return list.sort((a, b) => {
+      const orderA = a.orderIndex !== undefined ? a.orderIndex : 0;
+      const orderB = b.orderIndex !== undefined ? b.orderIndex : 0;
+      return orderA - orderB;
+    });
   }, [invoices, currentMonth]);
 
   // Active rate
