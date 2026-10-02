@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { StoredInvoice, InvoiceStatus, AppSettings, DatabaseFilters, Currency } from '../types/bonus';
-import { getPersonColor, formatCurrency, formatMonthName, formatRate } from '../utils/colors';
+import { getPersonColor, getMonthColor, formatCurrency, formatMonthName, formatRate } from '../utils/colors';
 import { getEurExchangeRateForDate, getEurRateForEndOfMonth } from '../services/nbpService';
 import { saveStoredInvoices, saveAppSettings } from '../services/storageService';
 import {
@@ -918,6 +918,7 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
               ) : (
                 filteredAndSortedInvoices.map((inv) => {
                   const personColor = getPersonColor(inv.prowadzacy);
+                  const monthColor = getMonthColor(inv.miesiacRozliczeniowy);
                   const isEur = inv.waluta === 'EUR';
                   const isSettled = inv.status === 'ROZLICZONA';
                   const isSelected = selectedIds.has(inv.id);
@@ -1032,26 +1033,29 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                       <td className="py-2 px-3 text-center">
                         {isSettled ? (
                           <div
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300 cursor-not-allowed"
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border ${monthColor.bg} ${monthColor.text} ${monthColor.border} cursor-not-allowed shadow-2xs`}
                             title="Faktura jest ROZLICZONA. Miesiąc jest całkowicie zablokowany."
                           >
-                            <Lock className="w-3 h-3 text-emerald-700" />
+                            <Lock className="w-3 h-3" />
+                            <span className={`w-2 h-2 rounded-full ${monthColor.dot}`} />
                             {formatMonthName(inv.miesiacRozliczeniowy)}
                           </div>
                         ) : (
                           <select
                             value={inv.miesiacRozliczeniowy || ''}
                             onChange={(e) => handleInvoiceMonthChange(inv.id, e.target.value)}
-                            className={`text-xs py-1 px-2 rounded-md font-medium border outline-none cursor-pointer transition ${
-                              inv.miesiacRozliczeniowy
-                                ? 'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-800'
-                                : 'bg-slate-50 text-slate-500 border-slate-300 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
-                            }`}
+                            className={`text-xs py-1 px-2.5 rounded-md font-bold border outline-none cursor-pointer transition shadow-2xs ${monthColor.bg} ${monthColor.text} ${monthColor.border}`}
                             title="Kliknij, aby zmienić miesiąc rozliczeniowy"
                           >
-                            <option value="">— Wolna (brak) —</option>
+                            <option value="" className="bg-white text-slate-700 dark:bg-slate-800 dark:text-slate-300 font-normal">
+                              — Wolna (brak) —
+                            </option>
                             {availableMonths.map((m) => (
-                              <option key={m} value={m}>
+                              <option
+                                key={m}
+                                value={m}
+                                className="bg-white text-slate-800 dark:bg-slate-800 dark:text-slate-200 font-semibold"
+                              >
                                 {formatMonthName(m)} ({m})
                               </option>
                             ))}
@@ -1103,17 +1107,21 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                       {/* Status */}
                       <td className="py-2 px-3 text-center">
                         {inv.status === 'ROZLICZONA' ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold border shadow-2xs ${monthColor.bg} ${monthColor.text} ${monthColor.border}`}
+                          >
                             <CheckCircle className="w-3 h-3" />
                             Rozliczona
                           </span>
                         ) : inv.status === 'ZAREZERWOWANA' || inv.miesiacRozliczeniowy ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border shadow-2xs ${monthColor.bg} ${monthColor.text} ${monthColor.border}`}
+                          >
                             <Bookmark className="w-3 h-3" />
                             Zarezerwowana
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-300 dark:border-slate-700">
                             Wolna
                           </span>
                         )}
@@ -1277,18 +1285,25 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({
                 <label className="block font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
                   Miesiąc Rozliczeniowy
                 </label>
-                <select
-                  value={editForm.miesiacRozliczeniowy}
-                  onChange={(e) => setEditForm({ ...editForm, miesiacRozliczeniowy: e.target.value })}
-                  className="w-full text-sm p-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">— Wolna (brak przypisanego miesiąca) —</option>
-                  {availableMonths.map((m) => (
-                    <option key={m} value={m}>
-                      {formatMonthName(m)} ({m})
-                    </option>
-                  ))}
-                </select>
+                {(() => {
+                  const mColor = getMonthColor(editForm.miesiacRozliczeniowy);
+                  return (
+                    <select
+                      value={editForm.miesiacRozliczeniowy}
+                      onChange={(e) => setEditForm({ ...editForm, miesiacRozliczeniowy: e.target.value })}
+                      className={`w-full text-sm p-2 rounded-lg border font-bold outline-none transition shadow-2xs ${mColor.bg} ${mColor.text} ${mColor.border}`}
+                    >
+                      <option value="" className="bg-white text-slate-700 dark:bg-slate-800 dark:text-slate-300 font-normal">
+                        — Wolna (brak przypisanego miesiąca) —
+                      </option>
+                      {availableMonths.map((m) => (
+                        <option key={m} value={m} className="bg-white text-slate-800 dark:bg-slate-800 dark:text-slate-200 font-semibold">
+                          {formatMonthName(m)} ({m})
+                        </option>
+                      ))}
+                    </select>
+                  );
+                })()}
               </div>
             </div>
 
